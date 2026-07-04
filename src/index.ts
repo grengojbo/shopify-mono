@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { createMonoClient } from './lib/mono-client';
 import { createPubkeyProvider, type PubkeyProvider } from './lib/mono-pubkey';
 import { createShopifyClient } from './lib/shopify-client';
+import { captureHandler } from './routes/capture';
 import { createInvoiceHandler } from './routes/create-invoice';
 import { monoWebhookHandler } from './routes/mono-webhook';
 
@@ -10,6 +11,7 @@ export type Env = {
   MONO_TOKEN: string;
   SHOPIFY_ADMIN_TOKEN: string;
   SHOPIFY_STORE_DOMAIN: string;
+  CAPTURE_TOKEN: string;
 };
 
 // Кеш публічного ключа mono живе на рівні модуля — між запитами одного
@@ -48,6 +50,15 @@ app.post('/mono-webhook', (c) =>
       adminToken: c.env.SHOPIFY_ADMIN_TOKEN,
     }),
     pubkeys: getPubkeyProvider(c.env),
+    now: () => Math.floor(Date.now() / 1000),
+  })(c),
+);
+
+app.post('/capture', (c) =>
+  captureHandler({
+    db: c.env.DB,
+    mono: createMonoClient({ token: c.env.MONO_TOKEN }),
+    captureToken: c.env.CAPTURE_TOKEN,
     now: () => Math.floor(Date.now() / 1000),
   })(c),
 );

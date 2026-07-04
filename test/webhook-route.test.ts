@@ -368,6 +368,36 @@ describe('POST /mono-webhook — статуси', () => {
     ]);
   });
 
+  it('hold-інвойс + success (capture) → UPDATE ставить captured_at', async () => {
+    const f = await makeFixture({
+      invoiceRow: { order_id: 'gid://shopify/Order/77', payment_type: 'hold', status: 'hold' },
+    });
+
+    const res = await post(f.app, SUCCESS_BODY, await f.xSign(SUCCESS_BODY));
+
+    expect(res.status).toBe(200);
+    const updateCall = f.calls.find((c) => c.sql.includes('UPDATE invoices'));
+    expect(updateCall?.sql).toContain('captured_at');
+    expect(updateCall?.params).toEqual([
+      'success',
+      FIXED_NOW,
+      42000,
+      '662476',
+      '060189181768',
+      FIXED_NOW, // captured_at
+      'p2_9ZgpZVsl3',
+    ]);
+  });
+
+  it('debit-інвойс + success → captured_at НЕ встановлюється', async () => {
+    const f = await makeFixture(); // debit за замовчуванням
+
+    await post(f.app, SUCCESS_BODY, await f.xSign(SUCCESS_BODY));
+
+    const updateCall = f.calls.find((c) => c.sql.includes('UPDATE invoices'));
+    expect(updateCall?.sql).not.toContain('captured_at');
+  });
+
   it('raw_body зберігається дослівно у webhook_log', async () => {
     const f = await makeFixture();
 
