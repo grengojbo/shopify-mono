@@ -3,6 +3,13 @@
 
 const DECIMAL_PATTERN = /^\d+(\.\d{1,2})?$/;
 
+/** Форматує цілі копійки у рядок гривень ("42000" → "420.00") цілочисельною математикою. */
+export function kopecksToUahString(kopecks: number): string {
+  const whole = Math.floor(kopecks / 100);
+  const fraction = String(kopecks % 100).padStart(2, '0');
+  return `${whole}.${fraction}`;
+}
+
 /** Конвертує десятковий рядок гривень у цілі копійки. Кидає на будь-який нестандартний формат. */
 export function uahToKopecks(decimal: string): number {
   if (!DECIMAL_PATTERN.test(decimal)) {

@@ -111,6 +111,12 @@ export type ShopifyClient = {
    * це потрібно для збіжності ретраїв вебхука після часткового провалу.
    */
   orderMarkAsPaid(orderId: string): Promise<void>;
+  /**
+   * Скасовує неоплачене замовлення-привид (чистка cron, PRD §11): без
+   * рефанду, з поверненням товару на склад, без нотифікації покупця.
+   * «Вже скасовано» трактується як успіх (збіжність повторних прогонів).
+   */
+  orderCancel(orderId: string): Promise<void>;
 };
 
 const ORDER_MARK_AS_PAID_MUTATION = `
@@ -132,6 +138,29 @@ type OrderMarkAsPaidPayload = {
   orderMarkAsPaid: {
     userErrors: Array<{ field: string[] | null; message: string }>;
     order: { id: string; displayFinancialStatus: string } | null;
+  } | null;
+};
+
+const ORDER_CANCEL_MUTATION = `
+  mutation OrderCancel($orderId: ID!, $refundMethod: OrderCancelRefundMethodInput!, $restock: Boolean!, $reason: OrderCancelReason!, $notifyCustomer: Boolean, $staffNote: String) {
+    orderCancel(orderId: $orderId, refundMethod: $refundMethod, restock: $restock, reason: $reason, notifyCustomer: $notifyCustomer, staffNote: $staffNote) {
+      job {
+        id
+        done
+      }
+      orderCancelUserErrors {
+        field
+        message
+        code
+      }
+    }
+  }
+`;
+
+type OrderCancelPayload = {
+  orderCancel: {
+    job: { id: string; done: boolean } | null;
+    orderCancelUserErrors: Array<{ field: string[] | null; message: string; code: string }>;
   } | null;
 };
 
@@ -207,6 +236,27 @@ export function createShopifyClient(options: ShopifyClientOptions): ShopifyClien
         return;
       }
       throw new ShopifyApiError(200, userErrors[0]?.message);
+    },
+
+    async orderCancel(orderId) {
+      const data = await graphql<OrderCancelPayload>(ORDER_CANCEL_MUTATION, {
+        orderId,
+        refundMethod: { originalPaymentMethodsRefund: false },
+        restock: true,
+        reason: 'OTHER',
+        notifyCustomer: false,
+        staffNote: 'Не оплачено вчасно — автоматичне скасування (bbox-mono-payments)',
+      });
+
+      const cancelErrors = data.orderCancel?.orderCancelUserErrors ?? [];
+      if (cancelErrors.length === 0) {
+        return;
+      }
+      // Повторний прогін чистки після часткового провалу — замовлення вже скасоване
+      if (cancelErrors.some((e) => e.message.toLowerCase().includes('already been cancelled'))) {
+        return;
+      }
+      throw new ShopifyApiError(200, cancelErrors[0]?.message);
     },
   };
 }

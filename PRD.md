@@ -286,7 +286,7 @@ crons = ["*/15 * * * *"]
 - `SHOPIFY_ADMIN_TOKEN`
 - `SHOPIFY_STORE_DOMAIN`
 - `CAPTURE_TOKEN` — Bearer-токен для `POST /capture` (маршрут списує заблоковані hold-кошти, тому захищений; викликається оператором вручну або довіреним тригером)
-- `TELEGRAM_BOT_TOKEN` / WhatsApp / email-провайдер
+- `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` — нагадування оператору в Telegram (MVP-канал; бот не може писати покупцю першим). WhatsApp / email-провайдер — пізніші канали
 - (Path B) креденшали Payments App
 
 ---

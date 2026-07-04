@@ -11,8 +11,8 @@ import type { MonoClient } from '../lib/mono-client';
 import type { ShopifyClient } from '../lib/shopify-client';
 
 export type CreateInvoiceDeps = {
-  shopify: ShopifyClient;
-  mono: MonoClient;
+  shopify: Pick<ShopifyClient, 'getOrderForInvoice'>;
+  mono: Pick<MonoClient, 'createInvoice' | 'removeInvoice'>;
   db: D1Database;
   /** Unix-час у секундах; ін'єктується для детермінованих тестів. */
   now: () => number;

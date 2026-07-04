@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import worker, { app, type Env } from '../src/index';
+import { app } from '../src/index';
 
 describe('GET /health', () => {
   it('відповідає 200 зі статусом ok', async () => {
@@ -14,13 +14,5 @@ describe('GET /health', () => {
     const res = await app.request('/no-such-route');
 
     expect(res.status).toBe(404);
-  });
-});
-
-describe('scheduled', () => {
-  it('заглушка завершується без помилок', async () => {
-    await expect(
-      worker.scheduled({} as ScheduledController, {} as Env, {} as ExecutionContext),
-    ).resolves.toBeUndefined();
   });
 });

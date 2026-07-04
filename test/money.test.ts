@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import { uahToKopecks } from '../src/lib/money';
+import { kopecksToUahString, uahToKopecks } from '../src/lib/money';
+
+describe('kopecksToUahString', () => {
+  it('форматує копійки у рядок гривень', () => {
+    expect(kopecksToUahString(42000)).toBe('420.00');
+    expect(kopecksToUahString(5)).toBe('0.05');
+    expect(kopecksToUahString(0)).toBe('0.00');
+    expect(kopecksToUahString(123456)).toBe('1234.56');
+  });
+});
 
 describe('uahToKopecks', () => {
   it('конвертує суму з двома десятковими знаками', () => {
