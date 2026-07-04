@@ -105,42 +105,78 @@ export type ShopifyClientOptions = {
 
 export type ShopifyClient = {
   getOrderForInvoice(orderId: string): Promise<OrderForInvoice | null>;
+  /**
+   * Позначає замовлення оплаченим (Path A). Вже оплачене замовлення
+   * (userError + displayFinancialStatus=PAID) трактується як успіх —
+   * це потрібно для збіжності ретраїв вебхука після часткового провалу.
+   */
+  orderMarkAsPaid(orderId: string): Promise<void>;
+};
+
+const ORDER_MARK_AS_PAID_MUTATION = `
+  mutation OrderMarkAsPaid($input: OrderMarkAsPaidInput!) {
+    orderMarkAsPaid(input: $input) {
+      userErrors {
+        field
+        message
+      }
+      order {
+        id
+        displayFinancialStatus
+      }
+    }
+  }
+`;
+
+type OrderMarkAsPaidPayload = {
+  orderMarkAsPaid: {
+    userErrors: Array<{ field: string[] | null; message: string }>;
+    order: { id: string; displayFinancialStatus: string } | null;
+  } | null;
 };
 
 export function createShopifyClient(options: ShopifyClientOptions): ShopifyClient {
   const fetchImpl = options.fetch ?? fetch;
 
+  async function graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+    const response = await fetchImpl(
+      `https://${options.storeDomain}/admin/api/${ADMIN_API_VERSION}/graphql.json`,
+      {
+        method: 'POST',
+        headers: {
+          'X-Shopify-Access-Token': options.adminToken,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ query, variables }),
+      },
+    );
+
+    if (!response.ok) {
+      throw new ShopifyApiError(response.status);
+    }
+
+    const payload = (await response.json()) as {
+      data: T | null;
+      errors?: Array<{ message: string }>;
+    };
+
+    if (payload.errors && payload.errors.length > 0) {
+      throw new ShopifyApiError(response.status, payload.errors[0]?.message);
+    }
+    if (payload.data === null || payload.data === undefined) {
+      throw new ShopifyApiError(response.status, 'порожня відповідь GraphQL');
+    }
+
+    return payload.data;
+  }
+
   return {
     async getOrderForInvoice(orderId) {
-      const response = await fetchImpl(
-        `https://${options.storeDomain}/admin/api/${ADMIN_API_VERSION}/graphql.json`,
-        {
-          method: 'POST',
-          headers: {
-            'X-Shopify-Access-Token': options.adminToken,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            query: ORDER_FOR_INVOICE_QUERY,
-            variables: { id: orderId },
-          }),
-        },
-      );
+      const data = await graphql<{ order: GraphqlOrderNode | null }>(ORDER_FOR_INVOICE_QUERY, {
+        id: orderId,
+      });
 
-      if (!response.ok) {
-        throw new ShopifyApiError(response.status);
-      }
-
-      const payload = (await response.json()) as {
-        data: { order: GraphqlOrderNode | null } | null;
-        errors?: Array<{ message: string }>;
-      };
-
-      if (payload.errors && payload.errors.length > 0) {
-        throw new ShopifyApiError(response.status, payload.errors[0]?.message);
-      }
-
-      const order = payload.data?.order;
+      const order = data.order;
       if (!order) {
         return null;
       }
@@ -154,6 +190,23 @@ export function createShopifyClient(options: ShopifyClientOptions): ShopifyClien
         currencyCode: order.totalOutstandingSet.shopMoney.currencyCode,
         lineItems: order.lineItems.edges.map((edge) => mapLineItem(edge.node)),
       };
+    },
+
+    async orderMarkAsPaid(orderId) {
+      const data = await graphql<OrderMarkAsPaidPayload>(ORDER_MARK_AS_PAID_MUTATION, {
+        input: { id: orderId },
+      });
+
+      const result = data.orderMarkAsPaid;
+      const userErrors = result?.userErrors ?? [];
+      if (userErrors.length === 0) {
+        return;
+      }
+      // Замовлення вже PAID — mark-paid уже спрацював у попередній спробі
+      if (result?.order?.displayFinancialStatus === 'PAID') {
+        return;
+      }
+      throw new ShopifyApiError(200, userErrors[0]?.message);
     },
   };
 }
