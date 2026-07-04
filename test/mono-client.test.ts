@@ -104,6 +104,34 @@ describe('finalizeInvoice', () => {
   });
 });
 
+describe('removeInvoice', () => {
+  it('шле POST на remove і не падає на порожньому тілі відповіді', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const client = makeClient(fetchMock);
+
+    await expect(client.removeInvoice({ invoiceId: 'p2_9ZgpZVsl3' })).resolves.toBeUndefined();
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.monobank.ua/api/merchant/invoice/remove');
+    expect(JSON.parse(init.body as string)).toEqual({ invoiceId: 'p2_9ZgpZVsl3' });
+  });
+
+  it('кидає MonoApiError, якщо remove повернув не-2xx', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        errorResponse(404, { errCode: 'NOT_FOUND', errText: "invalid 'invoiceId'" }),
+      );
+
+    const error = await makeClient(fetchMock)
+      .removeInvoice({ invoiceId: 'unknown' })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(MonoApiError);
+    expect((error as MonoApiError).status).toBe(404);
+  });
+});
+
 describe('cancelInvoice', () => {
   it('шле POST на cancel з extRef', async () => {
     const fetchMock = vi

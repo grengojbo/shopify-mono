@@ -114,6 +114,10 @@ export type CancelInvoiceResponse = {
   modifiedDate: string;
 };
 
+export type RemoveInvoiceRequest = {
+  invoiceId: string;
+};
+
 export class MonoApiError extends Error {
   readonly status: number;
   readonly errCode: string | undefined;
@@ -139,12 +143,27 @@ export type MonoClient = {
   invoiceStatus(invoiceId: string): Promise<InvoiceStatusResponse>;
   finalizeInvoice(req: FinalizeInvoiceRequest): Promise<FinalizeInvoiceResponse>;
   cancelInvoice(req: CancelInvoiceRequest): Promise<CancelInvoiceResponse>;
+  /** Інвалідує ще неоплачений інвойс (на відміну від cancelInvoice — для вже оплаченого). */
+  removeInvoice(req: RemoveInvoiceRequest): Promise<void>;
   /** Повертає base64-обгорнутий PEM — кешувати на боці виклику. */
   getPubkey(): Promise<string>;
 };
 
 export function createMonoClient(options: MonoClientOptions): MonoClient {
   const fetchImpl = options.fetch ?? fetch;
+
+  async function throwForErrorResponse(response: Response): Promise<never> {
+    let errCode: string | undefined;
+    let errText: string | undefined;
+    try {
+      const parsed = (await response.json()) as { errCode?: string; errText?: string };
+      errCode = parsed.errCode;
+      errText = parsed.errText;
+    } catch {
+      // Тіло помилки не JSON (напр., HTML від шлюзу) — залишаємо лише статус
+    }
+    throw new MonoApiError(response.status, errCode, errText);
+  }
 
   async function request<T>(path: string, init?: { method: 'POST'; body: unknown }): Promise<T> {
     const response = await fetchImpl(`${MONO_BASE_URL}${path}`, {
@@ -157,19 +176,26 @@ export function createMonoClient(options: MonoClientOptions): MonoClient {
     });
 
     if (!response.ok) {
-      let errCode: string | undefined;
-      let errText: string | undefined;
-      try {
-        const parsed = (await response.json()) as { errCode?: string; errText?: string };
-        errCode = parsed.errCode;
-        errText = parsed.errText;
-      } catch {
-        // Тіло помилки не JSON (напр., HTML від шлюзу) — залишаємо лише статус
-      }
-      throw new MonoApiError(response.status, errCode, errText);
+      await throwForErrorResponse(response);
     }
 
     return (await response.json()) as T;
+  }
+
+  /** Для ендпоінтів з порожнім тілом відповіді (напр. invoice/remove) — не парсить JSON на success. */
+  async function requestVoid(path: string, body: unknown): Promise<void> {
+    const response = await fetchImpl(`${MONO_BASE_URL}${path}`, {
+      method: 'POST',
+      headers: {
+        'X-Token': options.token,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      await throwForErrorResponse(response);
+    }
   }
 
   return {
@@ -195,6 +221,9 @@ export function createMonoClient(options: MonoClientOptions): MonoClient {
         method: 'POST',
         body: req,
       });
+    },
+    removeInvoice(req) {
+      return requestVoid('/api/merchant/invoice/remove', req);
     },
     async getPubkey() {
       const { key } = await request<{ key: string }>('/api/merchant/pubkey');
