@@ -285,6 +285,7 @@ crons = ["*/15 * * * *"]
 - `MONO_TOKEN`
 - `SHOPIFY_ADMIN_TOKEN`
 - `SHOPIFY_STORE_DOMAIN`
+- `CAPTURE_TOKEN` — Bearer-токен для `POST /capture` (маршрут списує заблоковані hold-кошти, тому захищений; викликається оператором вручну або довіреним тригером)
 - `TELEGRAM_BOT_TOKEN` / WhatsApp / email-провайдер
 - (Path B) креденшали Payments App
 

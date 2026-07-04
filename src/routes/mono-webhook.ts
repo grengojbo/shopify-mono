@@ -124,22 +124,24 @@ export function monoWebhookHandler(deps: MonoWebhookDeps) {
         .bind(invoiceId, status, bodyText, receivedAt),
     ];
     if (!isLateNonTerminal) {
-      statements.push(
-        deps.db
-          .prepare(
-            'UPDATE invoices SET status = ?, modified_at = ?, final_amount = ?, approval_code = ?, rrn = ? WHERE invoice_id = ?',
-          )
-          .bind(
-            status,
-            receivedAt,
-            typeof payload.finalAmount === 'number' ? payload.finalAmount : null,
-            typeof payload.paymentInfo?.approvalCode === 'string'
-              ? payload.paymentInfo.approvalCode
-              : null,
-            typeof payload.paymentInfo?.rrn === 'string' ? payload.paymentInfo.rrn : null,
-            invoiceId,
-          ),
-      );
+      // Для hold-інвойсу success означає capture — фіксуємо момент фіналізації
+      const isCapture = invoice.payment_type === 'hold' && status === 'success';
+      const updateSql = isCapture
+        ? 'UPDATE invoices SET status = ?, modified_at = ?, final_amount = ?, approval_code = ?, rrn = ?, captured_at = ? WHERE invoice_id = ?'
+        : 'UPDATE invoices SET status = ?, modified_at = ?, final_amount = ?, approval_code = ?, rrn = ? WHERE invoice_id = ?';
+      const baseParams = [
+        status,
+        receivedAt,
+        typeof payload.finalAmount === 'number' ? payload.finalAmount : null,
+        typeof payload.paymentInfo?.approvalCode === 'string'
+          ? payload.paymentInfo.approvalCode
+          : null,
+        typeof payload.paymentInfo?.rrn === 'string' ? payload.paymentInfo.rrn : null,
+      ];
+      const params = isCapture
+        ? [...baseParams, receivedAt, invoiceId]
+        : [...baseParams, invoiceId];
+      statements.push(deps.db.prepare(updateSql).bind(...params));
     }
 
     try {
