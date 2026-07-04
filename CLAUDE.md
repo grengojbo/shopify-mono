@@ -48,6 +48,33 @@ Do not attempt to auto-redirect from the Thank You page on Path A — Checkout U
 
 **D1 schema** — see PRD.md §9 for the reference `invoices` / `webhook_log` tables. `webhook_log` exists specifically for idempotency (mono may deliver the same status more than once) and audit.
 
+## Security
+
+This is a **financial integration** — it moves real money and issues real fiscal receipts. Treat every change touching money, signatures, or secrets as security-sensitive, not routine.
+
+### Mandatory test coverage (write these before/alongside the code — follow TDD for anything touching money or signatures)
+
+- **ECDSA webhook signature** — valid signature accepted; tampered body rejected; tampered/wrong signature rejected; DER→P1363 conversion tested against a real mono sample payload (not a synthetic one); missing/malformed `X-Sign` header rejected with 400 and no side effects.
+- **Idempotency** — replaying the same `invoice_id + status` webhook twice must not double-mark an order Paid, double-fire a reminder, or double-write `webhook_log`.
+- **Amount integrity** — invoice amount is always derived server-side from the live Shopify order via Admin API; add a test/assertion path that fails closed if a route ever accepts a client-supplied amount.
+- **Race conditions** — webhook arriving before the invoice row is persisted; capture called on an already-expired or already-captured hold; concurrent webhook deliveries for the same invoice.
+- **Fail-closed behavior** — any crypto verification error, D1 write failure, or Admin API error must abort the mutation (never mark Paid/Authorized) rather than continue optimistically.
+- **Secrets hygiene** — no test should assert against or log a real token; use fixtures/mocks for `MONO_TOKEN` / `SHOPIFY_ADMIN_TOKEN` in CI.
+
+### GitHub Actions
+
+Two workflows already exist in `.github/workflows/`, both required to pass before merge to `main`:
+
+- **`ci.yml`** — install → typecheck → lint → unit tests with coverage → a dedicated coverage-threshold check on security-critical modules (mono client, ECDSA verifier, webhook handler) → `wrangler deploy --dry-run` to catch config drift. It expects `npm run typecheck`, `npm run lint`, `npm run test:coverage`, and `npm run test:coverage:critical` scripts in `package.json`, plus a `CLOUDFLARE_API_TOKEN` repo secret for the dry-run — none of these exist yet, so this workflow will fail until the project is scaffolded. Add the scripts as part of the Hono skeleton step (PRD.md §16.1), not by weakening the workflow.
+- **`security.yml`** — runs on every PR, on push to `main`, and weekly on a schedule:
+  - **CodeQL** (JavaScript/TypeScript) for SAST.
+  - **gitleaks** secret scanning over the diff — catches an accidentally committed `MONO_TOKEN` before it merges.
+  - **`dependency-review-action`** on PRs, failing on high/critical severity (small dependency surface is itself a control here — prefer zero-dep implementations for crypto/HTTP where Workers' built-ins suffice).
+  - **`npm audit --audit-level=high`** — same threshold, runs on every push too (needs `package-lock.json` to exist).
+  - **`wrangler.toml [vars]` lint** — fails the build if a `[vars]` key looks like a token/secret/key/password; a no-op until `wrangler.toml` exists.
+
+Branch protection on `main` should require both workflows green plus at least one review before merge — this repo has no staging environment fallback for a bad deploy touching real payments.
+
 ## Conventions
 
 - Amounts are **integers in kopecks**, always `ccy=980` (UAH only) — no float money math.
@@ -55,6 +82,16 @@ Do not attempt to auto-redirect from the Thank You page on Path A — Checkout U
 - Every mono webhook handler must be idempotent against `invoice_id + status`, checked via `webhook_log`/current D1 status before acting.
 - Any new secret goes through `wrangler secret put` and gets documented in PRD.md §14 — never inline it in a commit.
 - When PRD.md's open questions (§15) get resolved during implementation (mono support confirms hold-receipt timing, exact `basketOrder.sum` semantics, etc.), update PRD.md itself, not just code comments.
+
+## Code style (Node.js / TypeScript)
+
+- **Tooling: Biome only** — one tool for linting, formatting, and import sorting; config lives in `biome.json` at the repo root. No ESLint, no Prettier. Wire the npm scripts at the Hono-skeleton step (PRD §16.1): `"lint": "biome ci ."`, `"format": "biome format --write ."`, `"typecheck": "tsc --noEmit"`, with `@biomejs/biome`, `typescript`, and `@cloudflare/workers-types` as devDependencies.
+- **TypeScript strictness** — `tsconfig.json` is maximal: `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noImplicitOverride`, `noFallthroughCasesInSwitch`, `verbatimModuleSyntax`. Never weaken a flag to silence an error — fix the type. Banned: `any` (use `unknown` + narrowing), non-null assertion `!`, `@ts-ignore` (only `@ts-expect-error` with a reason), and `as` casts except where an external API leaves no alternative.
+- **Promises** — every Promise is awaited, returned, or handed to `ctx.waitUntil()`; `noFloatingPromises` is an error. In Workers a dangling promise is silently dropped once the handler returns — on a webhook route that means a lost D1 write.
+- **Naming** — files `kebab-case.ts`; functions/variables `camelCase`; types/interfaces `PascalCase` (no `I` prefix); module-level constants `UPPER_SNAKE_CASE`.
+- **Modules** — ESM only; `import type` for type-only imports; named exports everywhere except `src/index.ts`, where the Workers runtime requires a default export with `fetch`/`scheduled`.
+- **Errors** — no empty `catch`, never swallow an error; on money paths an error aborts the mutation (see Security → fail-closed).
+- **Formatting** — 2-space indent, single quotes, semicolons, line width 100 — enforced by Biome, not by hand.
 
 ## Documentation & tooling
 

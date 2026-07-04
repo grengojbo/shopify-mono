@@ -1,0 +1,90 @@
+name: Security
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Weekly sweep for newly disclosed CVEs / secrets, independent of code changes.
+    - cron: "0 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: CodeQL (SAST)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+
+      - uses: github/codeql-action/analyze@v3
+
+  secret-scan:
+    name: Secret scanning (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
+  npm-audit:
+    name: npm audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit for high/critical vulnerabilities
+        run: npm audit --audit-level=high
+
+  wrangler-config-check:
+    name: No secrets in wrangler.toml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fail if [vars] contains token/key/secret-shaped names
+        run: |
+          if [ ! -f wrangler.toml ]; then
+            echo "wrangler.toml not found yet — skipping."
+            exit 0
+          fi
+          if awk '/^\[vars\]/{flag=1; next} /^\[/{flag=0} flag' wrangler.toml \
+             | grep -iE '(token|secret|key|password|api_key)\s*=' ; then
+            echo "::error::wrangler.toml [vars] contains a secret-shaped key — move it to 'wrangler secret put'."
+            exit 1
+          fi
