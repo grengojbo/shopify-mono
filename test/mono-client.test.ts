@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { MonoApiError, createMonoClient } from '../src/lib/mono-client';
+import { createMonoClient, MonoApiError } from '../src/lib/mono-client';
 
 const TOKEN = 'test-mono-token-fixture'; // фікстура, не реальний секрет
 
