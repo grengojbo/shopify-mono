@@ -1,0 +1,13 @@
+# Розширює стандартний набір правил gitleaks дефолтним allowlist-винятком
+# для вендорованої сторонньої документації monobank-acquiring
+# (.claude/skills/monobank-acquiring/): приклади запитів там містять
+# плейсхолдери на кшталт "X-Token: YOUR_TOKEN" та приклад card token з
+# офіційної документації mono — не реальні секрети, а хибні спрацювання
+# правил generic-api-key / curl-auth-header.
+[extend]
+useDefault = true
+
+[allowlist]
+paths = [
+  '''\.claude/skills/monobank-acquiring/.*''',
+]
