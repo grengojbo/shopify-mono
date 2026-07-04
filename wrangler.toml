@@ -1,0 +1,17 @@
+# Конфігурація Cloudflare Worker (PRD §14).
+# Секрети (MONO_TOKEN, SHOPIFY_ADMIN_TOKEN, ...) — лише через `wrangler secret put`,
+# ніколи не в цьому файлі.
+
+name = "bbox-mono-payments"
+main = "src/index.ts"
+compatibility_date = "2026-06-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "bbox-payments"
+# Плейсхолдер: замінити реальним id після `wrangler d1 create bbox-payments`.
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[triggers]
+crons = ["*/15 * * * *"]
