@@ -7,6 +7,7 @@ const CRITICAL_SOURCES = [
   'src/lib/ecdsa-*.ts',
   'src/routes/mono-webhook.ts',
   'src/routes/capture.ts',
+  'src/cron.ts',
 ];
 
 export default defineConfig({
@@ -16,6 +17,7 @@ export default defineConfig({
       'test/ecdsa-*.test.ts',
       'test/webhook-*.test.ts',
       'test/capture-*.test.ts',
+      'test/cron*.test.ts',
     ],
     coverage: {
       provider: 'v8',

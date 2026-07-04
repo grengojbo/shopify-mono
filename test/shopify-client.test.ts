@@ -240,3 +240,70 @@ describe('orderMarkAsPaid', () => {
     );
   });
 });
+
+describe('orderCancel', () => {
+  it('шле мутацію без рефанду, з рестоком і без нотифікації покупця', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      graphqlResponse({
+        orderCancel: { job: { id: 'gid://shopify/Job/1', done: false }, orderCancelUserErrors: [] },
+      }),
+    );
+
+    await makeClient(fetchMock).orderCancel('gid://shopify/Order/1');
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as {
+      query: string;
+      variables: Record<string, unknown>;
+    };
+    expect(body.query).toContain('orderCancel');
+    expect(body.variables).toEqual({
+      orderId: 'gid://shopify/Order/1',
+      refundMethod: { originalPaymentMethodsRefund: false },
+      restock: true,
+      reason: 'OTHER',
+      notifyCustomer: false,
+      staffNote: 'Не оплачено вчасно — автоматичне скасування (bbox-mono-payments)',
+    });
+  });
+
+  it('orderCancelUserErrors → ShopifyApiError', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      graphqlResponse({
+        orderCancel: {
+          job: null,
+          orderCancelUserErrors: [{ field: null, message: 'Order has fulfillments', code: 'X' }],
+        },
+      }),
+    );
+
+    await expect(makeClient(fetchMock).orderCancel('gid://shopify/Order/1')).rejects.toThrow(
+      ShopifyApiError,
+    );
+  });
+
+  it('«вже скасовано» → успіх без винятку (ідемпотентна збіжність)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      graphqlResponse({
+        orderCancel: {
+          job: null,
+          orderCancelUserErrors: [
+            { field: null, message: 'Order has already been cancelled.', code: 'INVALID' },
+          ],
+        },
+      }),
+    );
+
+    await expect(
+      makeClient(fetchMock).orderCancel('gid://shopify/Order/1'),
+    ).resolves.toBeUndefined();
+  });
+
+  it('errors[] верхнього рівня → ShopifyApiError', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(graphqlResponse(null, [{ message: 'Throttled' }]));
+
+    await expect(makeClient(fetchMock).orderCancel('gid://shopify/Order/1')).rejects.toThrow(
+      ShopifyApiError,
+    );
+  });
+});
