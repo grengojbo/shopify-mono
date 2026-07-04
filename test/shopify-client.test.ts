@@ -171,3 +171,72 @@ describe('getOrderForInvoice', () => {
     expect((error as Error).message).not.toContain(TOKEN);
   });
 });
+
+describe('orderMarkAsPaid', () => {
+  it('шле мутацію з id замовлення і завершується без помилки при порожніх userErrors', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      graphqlResponse({
+        orderMarkAsPaid: {
+          userErrors: [],
+          order: { id: 'gid://shopify/Order/1', displayFinancialStatus: 'PAID' },
+        },
+      }),
+    );
+
+    await makeClient(fetchMock).orderMarkAsPaid('gid://shopify/Order/1');
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as {
+      query: string;
+      variables: { input: { id: string } };
+    };
+    expect(body.query).toContain('orderMarkAsPaid');
+    expect(body.variables.input.id).toBe('gid://shopify/Order/1');
+  });
+
+  it('userError на вже оплаченому замовленні (status PAID) → успіх без винятку', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      graphqlResponse({
+        orderMarkAsPaid: {
+          userErrors: [{ field: ['id'], message: 'Order cannot be marked as paid.' }],
+          order: { id: 'gid://shopify/Order/1', displayFinancialStatus: 'PAID' },
+        },
+      }),
+    );
+
+    await expect(
+      makeClient(fetchMock).orderMarkAsPaid('gid://shopify/Order/1'),
+    ).resolves.toBeUndefined();
+  });
+
+  it('userError на НЕоплаченому замовленні → ShopifyApiError', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      graphqlResponse({
+        orderMarkAsPaid: {
+          userErrors: [{ field: ['id'], message: 'Order cannot be marked as paid.' }],
+          order: { id: 'gid://shopify/Order/1', displayFinancialStatus: 'PENDING' },
+        },
+      }),
+    );
+
+    await expect(makeClient(fetchMock).orderMarkAsPaid('gid://shopify/Order/1')).rejects.toThrow(
+      ShopifyApiError,
+    );
+  });
+
+  it('errors[] верхнього рівня GraphQL → ShopifyApiError', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(graphqlResponse(null, [{ message: 'Throttled' }]));
+
+    await expect(makeClient(fetchMock).orderMarkAsPaid('gid://shopify/Order/1')).rejects.toThrow(
+      ShopifyApiError,
+    );
+  });
+
+  it('не-2xx HTTP → ShopifyApiError', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('unauthorized', { status: 401 }));
+
+    await expect(makeClient(fetchMock).orderMarkAsPaid('gid://shopify/Order/1')).rejects.toThrow(
+      ShopifyApiError,
+    );
+  });
+});

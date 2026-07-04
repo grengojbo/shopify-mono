@@ -82,7 +82,10 @@ async function postOrder(
 
 describe('POST /create-invoice — happy path', () => {
   it('debit: створює mono-інвойс і записує в D1', async () => {
-    const shopify = { getOrderForInvoice: vi.fn().mockResolvedValue(makeOrder()) };
+    const shopify = {
+      getOrderForInvoice: vi.fn().mockResolvedValue(makeOrder()),
+      orderMarkAsPaid: vi.fn(),
+    };
     const mono = makeMonoClient();
     const db = makeDb();
     const app = makeApp({ shopify, mono, db, now: () => FIXED_NOW });
@@ -125,7 +128,10 @@ describe('POST /create-invoice — happy path', () => {
         },
       ],
     });
-    const shopify = { getOrderForInvoice: vi.fn().mockResolvedValue(order) };
+    const shopify = {
+      getOrderForInvoice: vi.fn().mockResolvedValue(order),
+      orderMarkAsPaid: vi.fn(),
+    };
     const mono = makeMonoClient();
     const db = makeDb();
     const app = makeApp({ shopify, mono, db, now: () => FIXED_NOW });
@@ -141,7 +147,10 @@ describe('POST /create-invoice — happy path', () => {
   });
 
   it('будує webHookUrl з origin запиту', async () => {
-    const shopify = { getOrderForInvoice: vi.fn().mockResolvedValue(makeOrder()) };
+    const shopify = {
+      getOrderForInvoice: vi.fn().mockResolvedValue(makeOrder()),
+      orderMarkAsPaid: vi.fn(),
+    };
     const mono = makeMonoClient();
     const db = makeDb();
     const app = makeApp({ shopify, mono, db, now: () => FIXED_NOW });
@@ -160,6 +169,7 @@ describe('POST /create-invoice — happy path', () => {
   it('не передає redirectUrl, якщо Shopify не повернув statusPageUrl', async () => {
     const shopify = {
       getOrderForInvoice: vi.fn().mockResolvedValue(makeOrder({ statusPageUrl: null })),
+      orderMarkAsPaid: vi.fn(),
     };
     const mono = makeMonoClient();
     const db = makeDb();
@@ -176,6 +186,7 @@ describe('POST /create-invoice — amount integrity', () => {
   it('ігнорує клієнтський amount — сума завжди з Shopify', async () => {
     const shopify = {
       getOrderForInvoice: vi.fn().mockResolvedValue(makeOrder({ totalOutstandingKopecks: 99900 })),
+      orderMarkAsPaid: vi.fn(),
     };
     const mono = makeMonoClient();
     const db = makeDb();
@@ -189,7 +200,7 @@ describe('POST /create-invoice — amount integrity', () => {
 
 describe('POST /create-invoice — ідемпотентність', () => {
   it('повертає наявний created-інвойс без повторного виклику mono', async () => {
-    const shopify = { getOrderForInvoice: vi.fn() };
+    const shopify = { getOrderForInvoice: vi.fn(), orderMarkAsPaid: vi.fn() };
     const mono = makeMonoClient();
     const db = makeDb({
       first: { invoice_id: 'p2_existing', page_url: 'https://pay.mbnk.biz/p2_existing' },
@@ -210,7 +221,7 @@ describe('POST /create-invoice — ідемпотентність', () => {
 
 describe('POST /create-invoice — валідація та стан замовлення', () => {
   it('невалідне тіло (без orderId) → 400', async () => {
-    const shopify = { getOrderForInvoice: vi.fn() };
+    const shopify = { getOrderForInvoice: vi.fn(), orderMarkAsPaid: vi.fn() };
     const mono = makeMonoClient();
     const db = makeDb();
     const app = makeApp({ shopify, mono, db, now: () => FIXED_NOW });
@@ -222,7 +233,10 @@ describe('POST /create-invoice — валідація та стан замовл
   });
 
   it('замовлення не знайдено → 404', async () => {
-    const shopify = { getOrderForInvoice: vi.fn().mockResolvedValue(null) };
+    const shopify = {
+      getOrderForInvoice: vi.fn().mockResolvedValue(null),
+      orderMarkAsPaid: vi.fn(),
+    };
     const mono = makeMonoClient();
     const db = makeDb();
     const app = makeApp({ shopify, mono, db, now: () => FIXED_NOW });
@@ -235,6 +249,7 @@ describe('POST /create-invoice — валідація та стан замовл
   it('замовлення вже PAID → 409', async () => {
     const shopify = {
       getOrderForInvoice: vi.fn().mockResolvedValue(makeOrder({ financialStatus: 'PAID' })),
+      orderMarkAsPaid: vi.fn(),
     };
     const mono = makeMonoClient();
     const db = makeDb();
@@ -249,6 +264,7 @@ describe('POST /create-invoice — валідація та стан замовл
   it('валюта не UAH → 422', async () => {
     const shopify = {
       getOrderForInvoice: vi.fn().mockResolvedValue(makeOrder({ currencyCode: 'EUR' })),
+      orderMarkAsPaid: vi.fn(),
     };
     const mono = makeMonoClient();
     const db = makeDb();
@@ -263,6 +279,7 @@ describe('POST /create-invoice — валідація та стан замовл
   it('сума до сплати 0 → 422', async () => {
     const shopify = {
       getOrderForInvoice: vi.fn().mockResolvedValue(makeOrder({ totalOutstandingKopecks: 0 })),
+      orderMarkAsPaid: vi.fn(),
     };
     const mono = makeMonoClient();
     const db = makeDb();
@@ -276,7 +293,10 @@ describe('POST /create-invoice — валідація та стан замовл
 
 describe('POST /create-invoice — fail-closed на помилках апстрімів', () => {
   it('shopify.getOrderForInvoice впав → 502, mono не викликається', async () => {
-    const shopify = { getOrderForInvoice: vi.fn().mockRejectedValue(new Error('shopify 401')) };
+    const shopify = {
+      getOrderForInvoice: vi.fn().mockRejectedValue(new Error('shopify 401')),
+      orderMarkAsPaid: vi.fn(),
+    };
     const mono = makeMonoClient();
     const db = makeDb();
     const app = makeApp({ shopify, mono, db, now: () => FIXED_NOW });
@@ -289,7 +309,10 @@ describe('POST /create-invoice — fail-closed на помилках апстр�
   });
 
   it('mono createInvoice впав → 502, D1 не викликається', async () => {
-    const shopify = { getOrderForInvoice: vi.fn().mockResolvedValue(makeOrder()) };
+    const shopify = {
+      getOrderForInvoice: vi.fn().mockResolvedValue(makeOrder()),
+      orderMarkAsPaid: vi.fn(),
+    };
     const mono = makeMonoClient({
       createInvoice: vi.fn().mockRejectedValue(new Error('mono down')),
     });
@@ -303,7 +326,10 @@ describe('POST /create-invoice — fail-closed на помилках апстр�
   });
 
   it('D1 INSERT впав → mono removeInvoice викликано, відповідь 500', async () => {
-    const shopify = { getOrderForInvoice: vi.fn().mockResolvedValue(makeOrder()) };
+    const shopify = {
+      getOrderForInvoice: vi.fn().mockResolvedValue(makeOrder()),
+      orderMarkAsPaid: vi.fn(),
+    };
     const mono = makeMonoClient();
     const db = makeDb({
       runImpl: () => Promise.reject(new Error('D1 unavailable')),
@@ -317,7 +343,10 @@ describe('POST /create-invoice — fail-closed на помилках апстр�
   });
 
   it('D1 INSERT впав і removeInvoice теж впав → все одно 500, без падіння процесу', async () => {
-    const shopify = { getOrderForInvoice: vi.fn().mockResolvedValue(makeOrder()) };
+    const shopify = {
+      getOrderForInvoice: vi.fn().mockResolvedValue(makeOrder()),
+      orderMarkAsPaid: vi.fn(),
+    };
     const mono = makeMonoClient({
       removeInvoice: vi.fn().mockRejectedValue(new Error('mono down')),
     });
