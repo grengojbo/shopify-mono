@@ -381,4 +381,16 @@ custom_domain = true
 2. Накочує нові міграції бази даних на хмару (`wrangler d1 migrations apply --remote`).
 3. Робить деплой нової версії коду.
 
-Для роботи CI/CD ми налаштували секрет `CLOUDFLARE_API_TOKEN` у нашому GitHub-репозиторії. Токен створено в Cloudflare Dashboard (My Profile → API Tokens → Create Token за шаблоном **Edit Cloudflare Workers** з правами на Workers Scripts та D1).
+Для роботи CI/CD ми налаштували секрет `CLOUDFLARE_API_TOKEN` у нашому GitHub-репозиторії.
+
+⚠️ **Готовий шаблон «Edit Cloudflare Workers» у Cloudflare Dashboard не включає прав на D1** — з ним крок «Apply D1 migrations (remote)» впаде з `code: 7403 (Authentication error)`. Створюй токен через **Create Token → Custom Token** (My Profile → API Tokens) з правами:
+
+- **Account → D1 → Edit**
+- **Account → Workers Scripts → Edit**
+- Account Resources: саме той акаунт, де живе Worker
+
+Далі — зберегти токен у секреті:
+
+```bash
+gh secret set CLOUDFLARE_API_TOKEN --body "<токен>"
+```
