@@ -352,6 +352,23 @@ npx wrangler deploy
 
 Наприкінці команда виведе публічний URL сервісу (наприклад, `https://bbox-mono-payments.<subdomain>.workers.dev`). Збережи його — це `worker_url`, який ти вкажеш у налаштуваннях Checkout UI розширення.
 
+### Крок 5. (Опційно) Власний домен замість `*.workers.dev`
+
+Якщо потрібна «брендована» адреса (наприклад, для акуратного вебхук-URL у кабінеті monobank) — і домен уже додано в цей самий Cloudflare-акаунт як zone, достатньо секції `[[routes]]` у [wrangler.toml](wrangler.toml):
+
+```toml
+[[routes]]
+pattern = "pay.bbox.kiev.ua"
+custom_domain = true
+```
+
+`custom_domain = true` означає, що `wrangler deploy` сам створить потрібний DNS-запис у зоні — нічого руками в Cloudflare Dashboard додавати не треба. Для проду `bbox-mono-payments` це вже налаштовано: Worker обслуговує запити на **`https://pay.bbox.kiev.ua`**.
+
+Важливо: щойно з'являється явний `route`, wrangler за замовчуванням **вимикає** `workers_dev`/`preview_urls` для цього деплою (навіть без явного запису в `wrangler.toml`) — стара адреса `*.workers.dev` перестає відповідати. Після переходу на власний домен онови:
+
+- `worker_url` у налаштуваннях Checkout UI розширення (Shopify admin → Checkout → редактор → блок «Оплата monobank»),
+- webhook URL у кабінеті monobank (`.../mono-webhook`), якщо він уже був там прописаний на старий `workers.dev`-домен.
+
 ---
 
 ## 🔄 Наступні оновлення та CI/CD
