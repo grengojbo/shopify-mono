@@ -50,10 +50,13 @@ export function createInvoiceHandler(deps: CreateInvoiceDeps) {
     }
 
     const body = await c.req.json<{ orderId?: unknown }>().catch(() => null);
-    const orderId = typeof body?.orderId === 'string' ? body.orderId : '';
-    if (orderId.length === 0) {
+    const rawOrderId = typeof body?.orderId === 'string' ? body.orderId : '';
+    if (rawOrderId.length === 0) {
       return c.json({ error: 'orderId is required' }, 400);
     }
+    // OrderConfirmation API на Thank You сторінці віддає id типу OrderIdentity
+    // (той самий числовий id, що й майбутній Order) — Admin API приймає лише Order.
+    const orderId = rawOrderId.replace(/^gid:\/\/shopify\/OrderIdentity\//, 'gid://shopify/Order/');
 
     const existing = await deps.db
       .prepare(
