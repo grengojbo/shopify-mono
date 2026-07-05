@@ -6,7 +6,14 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!!**/node_modules", "!!**/dist", "!!**/.wrangler", "!!**/.claude"]
+    "includes": [
+      "**",
+      "!!**/node_modules",
+      "!!**/dist",
+      "!!**/.wrangler",
+      "!!**/.claude",
+      "!!**/app/.shopify"
+    ]
   },
   "formatter": {
     "enabled": true,

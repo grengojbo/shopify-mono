@@ -1,0 +1,9 @@
+{
+  "loading": "Preparing your payment link…",
+  "payTitle": "Your order is awaiting payment",
+  "payBody": "To complete your order, pay via monobank (Apple Pay, Google Pay, or card).",
+  "payButton": "Pay with monobank",
+  "errorTitle": "Could not create a payment link",
+  "errorBody": "Please try again. If the error persists, contact us and we will send you a payment link manually.",
+  "retry": "Try again"
+}

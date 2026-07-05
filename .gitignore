@@ -144,3 +144,8 @@ vite.config.ts.timestamp-*
 
 # Cloudflare Workers
 .wrangler/
+
+# Shopify app (app/)
+app/node_modules/
+app/.shopify/
+app/**/dist/

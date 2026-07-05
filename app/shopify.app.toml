@@ -1,0 +1,21 @@
+# Custom app для магазину Bbox: Checkout UI Extension з кнопкою оплати mono
+# (Path A, PRD §10). client_id заповнюється командою `shopify app config link`
+# після створення апа в Partner Dashboard — див. README.md.
+
+name = "bbox-mono-pay"
+handle = "bbox-mono-pay"
+application_url = "https://example.com"
+embedded = false
+
+[access_scopes]
+# Extension лише рендерить кнопку й викликає Worker; Admin-скоупи не потрібні
+scopes = ""
+
+[auth]
+redirect_urls = ["https://example.com/auth/callback"]
+
+[webhooks]
+api_version = "2026-04"
+
+[build]
+include_config_on_deploy = true
