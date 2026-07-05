@@ -15,3 +15,9 @@ database_id = "a38e0591-55b2-4732-a6da-8c47a9377a8f"
 
 [triggers]
 crons = ["*/15 * * * *"]
+
+# Власний домен замість *.workers.dev (zone bbox.kiev.ua вже в Cloudflare).
+# custom_domain = true — wrangler сам створює DNS-запис при деплої.
+[[routes]]
+pattern = "pay.bbox.kiev.ua"
+custom_domain = true
