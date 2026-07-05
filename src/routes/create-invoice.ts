@@ -14,6 +14,8 @@ export type CreateInvoiceDeps = {
   shopify: Pick<ShopifyClient, 'getOrderForInvoice'>;
   mono: Pick<MonoClient, 'createInvoice' | 'removeInvoice'>;
   db: D1Database;
+  /** Перевірка Shopify session token від Checkout UI Extension. */
+  verifyToken: (token: string) => Promise<boolean>;
   /** Unix-час у секундах; ін'єктується для детермінованих тестів. */
   now: () => number;
 };
@@ -23,8 +25,30 @@ type ExistingInvoiceRow = {
   page_url: string | null;
 };
 
+// Extension робить fetch із sandbox-origin чекауту — потрібен CORS.
+// `*` безпечний: запит не credentialed, авторизація — власним Bearer-токеном.
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+} as const;
+
+export function createInvoicePreflightHandler() {
+  return (c: Context) => c.body(null, 204, CORS_HEADERS);
+}
+
 export function createInvoiceHandler(deps: CreateInvoiceDeps) {
   return async (c: Context) => {
+    for (const [name, value] of Object.entries(CORS_HEADERS)) {
+      c.header(name, value);
+    }
+
+    const authorization = c.req.header('Authorization') ?? '';
+    const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+    if (token.length === 0 || !(await deps.verifyToken(token))) {
+      return c.json({ error: 'unauthorized' }, 401);
+    }
+
     const body = await c.req.json<{ orderId?: unknown }>().catch(() => null);
     const orderId = typeof body?.orderId === 'string' ? body.orderId : '';
     if (orderId.length === 0) {

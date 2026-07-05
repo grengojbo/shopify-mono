@@ -1,0 +1,22 @@
+api_version = "2026-04"
+
+[[extensions]]
+type = "ui_extension"
+name = "Оплата monobank"
+handle = "mono-pay-button"
+description = "Кнопка «Сплатити через monobank» на сторінці подяки (Path A)"
+
+[[extensions.targeting]]
+target = "purchase.thank-you.block.render"
+module = "./src/Checkout.jsx"
+
+[extensions.capabilities]
+# fetch до Worker'а bbox-mono-payments
+network_access = true
+
+[extensions.settings]
+[[extensions.settings.fields]]
+key = "worker_url"
+type = "single_line_text_field"
+name = "URL платіжного Worker'а"
+description = "Базовий URL Cloudflare Worker'а (наприклад, https://bbox-mono-payments.<subdomain>.workers.dev)"

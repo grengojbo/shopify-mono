@@ -2,10 +2,11 @@ import { Hono } from 'hono';
 import { runCron } from './cron';
 import { createMonoClient } from './lib/mono-client';
 import { createPubkeyProvider, type PubkeyProvider } from './lib/mono-pubkey';
+import { verifySessionToken } from './lib/session-token';
 import { createShopifyClient } from './lib/shopify-client';
 import { createTelegramNotifier, type Notifier } from './lib/telegram';
 import { captureHandler } from './routes/capture';
-import { createInvoiceHandler } from './routes/create-invoice';
+import { createInvoiceHandler, createInvoicePreflightHandler } from './routes/create-invoice';
 import { monoWebhookHandler } from './routes/mono-webhook';
 
 export type Env = {
@@ -14,6 +15,10 @@ export type Env = {
   SHOPIFY_ADMIN_TOKEN: string;
   SHOPIFY_STORE_DOMAIN: string;
   CAPTURE_TOKEN: string;
+  /** Client secret custom app — верифікація session token екстеншна. */
+  SHOPIFY_APP_SECRET: string;
+  /** Client ID custom app — звірка claim `aud` session token. */
+  SHOPIFY_APP_CLIENT_ID: string;
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_CHAT_ID?: string;
 };
@@ -42,9 +47,19 @@ app.post('/create-invoice', (c) =>
     }),
     mono: createMonoClient({ token: c.env.MONO_TOKEN }),
     db: c.env.DB,
+    verifyToken: (token) =>
+      verifySessionToken({
+        token,
+        secret: c.env.SHOPIFY_APP_SECRET,
+        clientId: c.env.SHOPIFY_APP_CLIENT_ID,
+        shopDomain: c.env.SHOPIFY_STORE_DOMAIN,
+        now: () => Math.floor(Date.now() / 1000),
+      }),
     now: () => Math.floor(Date.now() / 1000),
   })(c),
 );
+
+app.options('/create-invoice', createInvoicePreflightHandler());
 
 app.post('/mono-webhook', (c) =>
   monoWebhookHandler({

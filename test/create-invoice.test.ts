@@ -2,7 +2,11 @@ import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 import type { MonoClient } from '../src/lib/mono-client';
 import type { OrderForInvoice } from '../src/lib/shopify-client';
-import { type CreateInvoiceDeps, createInvoiceHandler } from '../src/routes/create-invoice';
+import {
+  type CreateInvoiceDeps,
+  createInvoiceHandler,
+  createInvoicePreflightHandler,
+} from '../src/routes/create-invoice';
 
 const FIXED_NOW = 1_800_000_000;
 
@@ -62,9 +66,16 @@ function makeDb(overrides: { first?: unknown; runImpl?: () => Promise<unknown> }
   };
 }
 
-function makeApp(deps: CreateInvoiceDeps) {
+const VALID_TOKEN = 'valid-session-token'; // фікстура
+
+function makeApp(deps: Omit<CreateInvoiceDeps, 'verifyToken'> & Partial<CreateInvoiceDeps>) {
   const app = new Hono();
-  app.post('/create-invoice', createInvoiceHandler(deps));
+  const fullDeps: CreateInvoiceDeps = {
+    verifyToken: (token) => Promise.resolve(token === VALID_TOKEN),
+    ...deps,
+  };
+  app.post('/create-invoice', createInvoiceHandler(fullDeps));
+  app.options('/create-invoice', createInvoicePreflightHandler());
   return app;
 }
 
@@ -72,10 +83,14 @@ async function postOrder(
   app: Hono,
   body: unknown,
   url = 'https://worker.example.com/create-invoice',
+  authorization: string | null = `Bearer ${VALID_TOKEN}`,
 ) {
   return app.request(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(authorization ? { Authorization: authorization } : {}),
+    },
     body: JSON.stringify(body),
   });
 }
@@ -356,5 +371,78 @@ describe('POST /create-invoice — fail-closed на помилках апстр�
     const res = await postOrder(app, { orderId: 'gid://shopify/Order/1' });
 
     expect(res.status).toBe(500);
+  });
+});
+
+describe('POST /create-invoice — авторизація session token', () => {
+  it('без Authorization → 401, нуль викликів db/shopify/mono', async () => {
+    const shopify = { getOrderForInvoice: vi.fn(), orderMarkAsPaid: vi.fn() };
+    const mono = makeMonoClient();
+    const db = makeDb();
+    const app = makeApp({ shopify, mono, db, now: () => FIXED_NOW });
+
+    const res = await postOrder(app, { orderId: 'gid://shopify/Order/1' }, undefined, null);
+
+    expect(res.status).toBe(401);
+    expect(shopify.getOrderForInvoice).not.toHaveBeenCalled();
+    expect(mono.createInvoice).not.toHaveBeenCalled();
+    expect((db as unknown as { prepare: ReturnType<typeof vi.fn> }).prepare).not.toHaveBeenCalled();
+  });
+
+  it('невалідний токен → 401 без side effects', async () => {
+    const shopify = { getOrderForInvoice: vi.fn(), orderMarkAsPaid: vi.fn() };
+    const mono = makeMonoClient();
+    const db = makeDb();
+    const app = makeApp({ shopify, mono, db, now: () => FIXED_NOW });
+
+    const res = await postOrder(
+      app,
+      { orderId: 'gid://shopify/Order/1' },
+      undefined,
+      'Bearer forged-token',
+    );
+
+    expect(res.status).toBe(401);
+    expect(mono.createInvoice).not.toHaveBeenCalled();
+  });
+
+  it('заголовок без схеми Bearer → 401', async () => {
+    const shopify = { getOrderForInvoice: vi.fn(), orderMarkAsPaid: vi.fn() };
+    const mono = makeMonoClient();
+    const db = makeDb();
+    const app = makeApp({ shopify, mono, db, now: () => FIXED_NOW });
+
+    const res = await postOrder(app, { orderId: 'x' }, undefined, VALID_TOKEN);
+
+    expect(res.status).toBe(401);
+  });
+
+  it('успішна відповідь містить CORS-заголовок', async () => {
+    const shopify = {
+      getOrderForInvoice: vi.fn().mockResolvedValue(makeOrder()),
+      orderMarkAsPaid: vi.fn(),
+    };
+    const mono = makeMonoClient();
+    const db = makeDb();
+    const app = makeApp({ shopify, mono, db, now: () => FIXED_NOW });
+
+    const res = await postOrder(app, { orderId: 'gid://shopify/Order/1' });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+  });
+
+  it('OPTIONS (CORS preflight) → 204 з дозволеними методами й заголовками', async () => {
+    const shopify = { getOrderForInvoice: vi.fn(), orderMarkAsPaid: vi.fn() };
+    const app = makeApp({ shopify, mono: makeMonoClient(), db: makeDb(), now: () => FIXED_NOW });
+
+    const res = await app.request('https://worker.example.com/create-invoice', {
+      method: 'OPTIONS',
+    });
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(res.headers.get('Access-Control-Allow-Methods')).toContain('POST');
+    expect(res.headers.get('Access-Control-Allow-Headers')).toContain('Authorization');
   });
 });
