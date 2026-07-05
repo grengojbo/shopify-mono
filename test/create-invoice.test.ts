@@ -18,6 +18,7 @@ function makeOrder(overrides: Partial<OrderForInvoice> = {}): OrderForInvoice {
     statusPageUrl: 'https://bbox.myshopify.com/orders/abc/status',
     totalOutstandingKopecks: 42000,
     currencyCode: 'UAH',
+    paymentGatewayNames: ['monobank'],
     lineItems: [
       {
         title: 'Літофан "Кіт"',
@@ -444,5 +445,55 @@ describe('POST /create-invoice — авторизація session token', () => 
     expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
     expect(res.headers.get('Access-Control-Allow-Methods')).toContain('POST');
     expect(res.headers.get('Access-Control-Allow-Headers')).toContain('Authorization');
+  });
+});
+
+describe('POST /create-invoice — фільтр за методом оплати', () => {
+  it('COD-замовлення (накладений платіж) → 409, mono не викликається', async () => {
+    const shopify = {
+      getOrderForInvoice: vi
+        .fn()
+        .mockResolvedValue(makeOrder({ paymentGatewayNames: ['Накладений платіж (COD)'] })),
+      orderMarkAsPaid: vi.fn(),
+    };
+    const mono = makeMonoClient();
+    const db = makeDb();
+    const app = makeApp({ shopify, mono, db, now: () => FIXED_NOW });
+
+    const res = await postOrder(app, { orderId: 'gid://shopify/Order/1' });
+
+    expect(res.status).toBe(409);
+    expect(mono.createInvoice).not.toHaveBeenCalled();
+  });
+
+  it('назва методу з іншим регістром і обгорткою проходить', async () => {
+    const shopify = {
+      getOrderForInvoice: vi
+        .fn()
+        .mockResolvedValue(makeOrder({ paymentGatewayNames: ['Оплата карткою Monobank'] })),
+      orderMarkAsPaid: vi.fn(),
+    };
+    const mono = makeMonoClient();
+    const db = makeDb();
+    const app = makeApp({ shopify, mono, db, now: () => FIXED_NOW });
+
+    const res = await postOrder(app, { orderId: 'gid://shopify/Order/1' });
+
+    expect(res.status).toBe(200);
+    expect(mono.createInvoice).toHaveBeenCalled();
+  });
+
+  it('порожній список методів → 409', async () => {
+    const shopify = {
+      getOrderForInvoice: vi.fn().mockResolvedValue(makeOrder({ paymentGatewayNames: [] })),
+      orderMarkAsPaid: vi.fn(),
+    };
+    const mono = makeMonoClient();
+    const db = makeDb();
+    const app = makeApp({ shopify, mono, db, now: () => FIXED_NOW });
+
+    const res = await postOrder(app, { orderId: 'gid://shopify/Order/1' });
+
+    expect(res.status).toBe(409);
   });
 });

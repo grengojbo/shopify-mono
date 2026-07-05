@@ -78,6 +78,15 @@ export function createInvoiceHandler(deps: CreateInvoiceDeps) {
     if (order.financialStatus === 'PAID') {
       return c.json({ error: 'order already paid' }, 409);
     }
+    // Кнопка оплати — лише для замовлень з ручним методом «monobank»;
+    // COD («Накладений платіж») та інші методи її не бачать (409 → extension
+    // тихо ховає блок, як і для вже оплаченого замовлення)
+    const isMonoOrder = order.paymentGatewayNames.some((name) =>
+      name.toLowerCase().includes('monobank'),
+    );
+    if (!isMonoOrder) {
+      return c.json({ error: 'order not payable via monobank' }, 409);
+    }
     if (order.currencyCode !== 'UAH') {
       return c.json({ error: 'unsupported currency' }, 422);
     }

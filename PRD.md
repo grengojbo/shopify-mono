@@ -244,7 +244,7 @@ CREATE TABLE webhook_log (        -- ідемпотентність + аудит
 
 ## 12. Безпека
 
-- Усі секрети через `wrangler secret`: `MONO_TOKEN`, `SHOPIFY_ADMIN_TOKEN`, (Path B) `SHOPIFY_PAYMENTS_*`, канали нагадувань.
+- Усі секрети через `wrangler secret`: `MONO_TOKEN`, `SHOPIFY_ADMIN_CLIENT_ID`/`SHOPIFY_ADMIN_CLIENT_SECRET`, (Path B) `SHOPIFY_PAYMENTS_*`, канали нагадувань.
 - **Завжди** валідувати `X-Sign` вебхука mono (ECDSA) перед будь-якою дією. Невалідний підпис → 400, нічого не робити.
 - Суму інвойсу формувати **на сервері** з даних Shopify-замовлення (Admin API), ніколи не з клієнта.
 - Ідемпотентність вебхуків: повторний вебхук того ж `invoiceId+status` не повинен дублювати дії (перевірка через `webhook_log` / поточний статус у D1).
@@ -283,7 +283,7 @@ crons = ["*/15 * * * *"]
 
 Секрети (через `wrangler secret put`):
 - `MONO_TOKEN`
-- `SHOPIFY_ADMIN_TOKEN`
+- `SHOPIFY_ADMIN_CLIENT_ID` + `SHOPIFY_ADMIN_CLIENT_SECRET` — креденшали custom app (Dev Dashboard) для Admin API: вічних `shpat_`-токенів для нових апів з 2026-01 немає, Worker отримує 24-годинний токен через client credentials grant і кешує його
 - `SHOPIFY_STORE_DOMAIN`
 - `CAPTURE_TOKEN` — Bearer-токен для `POST /capture` (маршрут списує заблоковані hold-кошти, тому захищений; викликається оператором вручну або довіреним тригером)
 - `SHOPIFY_APP_SECRET` + `SHOPIFY_APP_CLIENT_ID` — client secret та client ID custom app з Checkout UI Extension: Worker верифікує ними session token (JWT HS256) у `POST /create-invoice`

@@ -8,11 +8,11 @@
     "link": "shopify app config link"
   },
   "dependencies": {
+    "@preact/signals": "^2.0.0",
     "@shopify/ui-extensions": "^2026.4.0",
     "preact": "^10.24.0"
   },
   "devDependencies": {
-    "@shopify/cli": "^3.80.0",
     "typescript": "^6.0.3"
   }
 }
