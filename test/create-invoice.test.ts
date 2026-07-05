@@ -96,6 +96,23 @@ async function postOrder(
   });
 }
 
+describe('POST /create-invoice — нормалізація orderId з OrderConfirmation API', () => {
+  it('gid://shopify/OrderIdentity/1 з Thank You сторінки конвертується в gid://shopify/Order/1', async () => {
+    const shopify = {
+      getOrderForInvoice: vi.fn().mockResolvedValue(makeOrder()),
+      orderMarkAsPaid: vi.fn(),
+    };
+    const mono = makeMonoClient();
+    const db = makeDb();
+    const app = makeApp({ shopify, mono, db, now: () => FIXED_NOW });
+
+    const res = await postOrder(app, { orderId: 'gid://shopify/OrderIdentity/1' });
+
+    expect(res.status).toBe(200);
+    expect(shopify.getOrderForInvoice).toHaveBeenCalledWith('gid://shopify/Order/1');
+  });
+});
+
 describe('POST /create-invoice — happy path', () => {
   it('debit: створює mono-інвойс і записує в D1', async () => {
     const shopify = {
