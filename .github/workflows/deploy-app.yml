@@ -1,0 +1,38 @@
+name: Deploy Shopify app
+
+# Автоматичний деплой extension'а mono-pay-button при змінах у app/
+# (README → «Автоматичний деплой»). Потрібен секрет SHOPIFY_APP_AUTOMATION_TOKEN
+# (Dev Dashboard → app → Settings → App Automation Token) і закомічений
+# client_id у app/shopify.app.toml (після одноразового `npm run link`).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: shopify app deploy
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Deploy app version
+        env:
+          SHOPIFY_APP_AUTOMATION_TOKEN: ${{ secrets.SHOPIFY_APP_AUTOMATION_TOKEN }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+        run: npx shopify app deploy --allow-updates --source-control-url "$COMMIT_URL"

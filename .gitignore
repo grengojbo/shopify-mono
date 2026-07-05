@@ -70,6 +70,10 @@ web_modules/
 .env.*
 !.env.example
 
+# wrangler local secrets (POST /create-invoice, /capture, /mono-webhook)
+.dev.vars
+.dev.vars.*
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache
