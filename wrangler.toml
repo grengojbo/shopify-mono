@@ -8,10 +8,10 @@ compatibility_date = "2026-06-01"
 compatibility_flags = ["nodejs_compat"]
 
 [[d1_databases]]
-binding = "DB"
+binding = "bbox_payments"
 database_name = "bbox-payments"
 # Плейсхолдер: замінити реальним id після `wrangler d1 create bbox-payments`.
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "a38e0591-55b2-4732-a6da-8c47a9377a8f"
 
 [triggers]
 crons = ["*/15 * * * *"]

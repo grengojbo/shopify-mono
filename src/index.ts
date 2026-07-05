@@ -11,7 +11,7 @@ import { createInvoiceHandler, createInvoicePreflightHandler } from './routes/cr
 import { monoWebhookHandler } from './routes/mono-webhook';
 
 export type Env = {
-  DB: D1Database;
+  bbox_payments: D1Database;
   MONO_TOKEN: string;
   SHOPIFY_STORE_DOMAIN: string;
   CAPTURE_TOKEN: string;
@@ -64,7 +64,7 @@ app.post('/create-invoice', (c) =>
   createInvoiceHandler({
     shopify: buildShopifyClient(c.env),
     mono: createMonoClient({ token: c.env.MONO_TOKEN }),
-    db: c.env.DB,
+    db: c.env.bbox_payments,
     verifyToken: (token) =>
       verifySessionToken({
         token,
@@ -81,7 +81,7 @@ app.options('/create-invoice', createInvoicePreflightHandler());
 
 app.post('/mono-webhook', (c) =>
   monoWebhookHandler({
-    db: c.env.DB,
+    db: c.env.bbox_payments,
     shopify: buildShopifyClient(c.env),
     pubkeys: getPubkeyProvider(c.env),
     now: () => Math.floor(Date.now() / 1000),
@@ -90,7 +90,7 @@ app.post('/mono-webhook', (c) =>
 
 app.post('/capture', (c) =>
   captureHandler({
-    db: c.env.DB,
+    db: c.env.bbox_payments,
     mono: createMonoClient({ token: c.env.MONO_TOKEN }),
     captureToken: c.env.CAPTURE_TOKEN,
     now: () => Math.floor(Date.now() / 1000),
@@ -120,7 +120,7 @@ async function scheduled(
   _ctx: ExecutionContext,
 ): Promise<void> {
   await runCron({
-    db: env.DB,
+    db: env.bbox_payments,
     mono: createMonoClient({ token: env.MONO_TOKEN }),
     shopify: buildShopifyClient(env),
     notifier: buildNotifier(env),
