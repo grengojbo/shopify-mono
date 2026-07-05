@@ -3,29 +3,33 @@ import { runCron } from './cron';
 import { createMonoClient } from './lib/mono-client';
 import { createPubkeyProvider, type PubkeyProvider } from './lib/mono-pubkey';
 import { verifySessionToken } from './lib/session-token';
-import { createShopifyClient } from './lib/shopify-client';
+import { type AdminTokenProvider, createAdminTokenProvider } from './lib/shopify-admin-token';
+import { createShopifyClient, type ShopifyClient } from './lib/shopify-client';
 import { createTelegramNotifier, type Notifier } from './lib/telegram';
 import { captureHandler } from './routes/capture';
 import { createInvoiceHandler, createInvoicePreflightHandler } from './routes/create-invoice';
 import { monoWebhookHandler } from './routes/mono-webhook';
 
 export type Env = {
-  DB: D1Database;
+  bbox_payments: D1Database;
   MONO_TOKEN: string;
-  SHOPIFY_ADMIN_TOKEN: string;
   SHOPIFY_STORE_DOMAIN: string;
   CAPTURE_TOKEN: string;
-  /** Client secret custom app — верифікація session token екстеншна. */
+  /** Client ID/secret апа Bbox-Worker-Integration — Admin API через client credentials grant. */
+  SHOPIFY_ADMIN_CLIENT_ID: string;
+  SHOPIFY_ADMIN_CLIENT_SECRET: string;
+  /** Client secret апа з extension (Bbox MonoBank Payments) — верифікація session token. */
   SHOPIFY_APP_SECRET: string;
-  /** Client ID custom app — звірка claim `aud` session token. */
+  /** Client ID того ж апа — звірка claim `aud` session token. */
   SHOPIFY_APP_CLIENT_ID: string;
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_CHAT_ID?: string;
 };
 
-// Кеш публічного ключа mono живе на рівні модуля — між запитами одного
-// ізоляту. Створюється ліниво, бо токен доступний лише в контексті запиту.
+// Кеші на рівні модуля живуть між запитами одного ізоляту.
+// Створюються ліниво, бо секрети доступні лише в контексті запиту.
 let pubkeyProvider: PubkeyProvider | null = null;
+let adminTokenProvider: AdminTokenProvider | null = null;
 
 function getPubkeyProvider(env: Env): PubkeyProvider {
   if (!pubkeyProvider) {
@@ -35,18 +39,32 @@ function getPubkeyProvider(env: Env): PubkeyProvider {
   return pubkeyProvider;
 }
 
+/** Admin-токен живе 24 год (client credentials grant) — кешується провайдером. */
+function buildShopifyClient(env: Env): ShopifyClient {
+  if (!adminTokenProvider) {
+    adminTokenProvider = createAdminTokenProvider({
+      storeDomain: env.SHOPIFY_STORE_DOMAIN,
+      clientId: env.SHOPIFY_ADMIN_CLIENT_ID,
+      clientSecret: env.SHOPIFY_ADMIN_CLIENT_SECRET,
+      now: () => Math.floor(Date.now() / 1000),
+    });
+  }
+  const provider = adminTokenProvider;
+  return createShopifyClient({
+    storeDomain: env.SHOPIFY_STORE_DOMAIN,
+    getAccessToken: () => provider.get(),
+  });
+}
+
 export const app = new Hono<{ Bindings: Env }>();
 
 app.get('/health', (c) => c.json({ status: 'ok' }));
 
 app.post('/create-invoice', (c) =>
   createInvoiceHandler({
-    shopify: createShopifyClient({
-      storeDomain: c.env.SHOPIFY_STORE_DOMAIN,
-      adminToken: c.env.SHOPIFY_ADMIN_TOKEN,
-    }),
+    shopify: buildShopifyClient(c.env),
     mono: createMonoClient({ token: c.env.MONO_TOKEN }),
-    db: c.env.DB,
+    db: c.env.bbox_payments,
     verifyToken: (token) =>
       verifySessionToken({
         token,
@@ -63,11 +81,8 @@ app.options('/create-invoice', createInvoicePreflightHandler());
 
 app.post('/mono-webhook', (c) =>
   monoWebhookHandler({
-    db: c.env.DB,
-    shopify: createShopifyClient({
-      storeDomain: c.env.SHOPIFY_STORE_DOMAIN,
-      adminToken: c.env.SHOPIFY_ADMIN_TOKEN,
-    }),
+    db: c.env.bbox_payments,
+    shopify: buildShopifyClient(c.env),
     pubkeys: getPubkeyProvider(c.env),
     now: () => Math.floor(Date.now() / 1000),
   })(c),
@@ -75,7 +90,7 @@ app.post('/mono-webhook', (c) =>
 
 app.post('/capture', (c) =>
   captureHandler({
-    db: c.env.DB,
+    db: c.env.bbox_payments,
     mono: createMonoClient({ token: c.env.MONO_TOKEN }),
     captureToken: c.env.CAPTURE_TOKEN,
     now: () => Math.floor(Date.now() / 1000),
@@ -105,12 +120,9 @@ async function scheduled(
   _ctx: ExecutionContext,
 ): Promise<void> {
   await runCron({
-    db: env.DB,
+    db: env.bbox_payments,
     mono: createMonoClient({ token: env.MONO_TOKEN }),
-    shopify: createShopifyClient({
-      storeDomain: env.SHOPIFY_STORE_DOMAIN,
-      adminToken: env.SHOPIFY_ADMIN_TOKEN,
-    }),
+    shopify: buildShopifyClient(env),
     notifier: buildNotifier(env),
     now: () => Math.floor(Date.now() / 1000),
   });

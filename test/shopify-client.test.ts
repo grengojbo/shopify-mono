@@ -13,7 +13,11 @@ function graphqlResponse(data: unknown, errors?: unknown[]): Response {
 }
 
 function makeClient(fetchMock: typeof fetch) {
-  return createShopifyClient({ storeDomain: STORE_DOMAIN, adminToken: TOKEN, fetch: fetchMock });
+  return createShopifyClient({
+    storeDomain: STORE_DOMAIN,
+    getAccessToken: () => Promise.resolve(TOKEN),
+    fetch: fetchMock,
+  });
 }
 
 function orderNode(overrides: Record<string, unknown> = {}) {
@@ -22,6 +26,7 @@ function orderNode(overrides: Record<string, unknown> = {}) {
     name: '#1001',
     displayFinancialStatus: 'PENDING',
     statusPageUrl: 'https://bbox-test.myshopify.com/orders/abc/status',
+    paymentGatewayNames: ['monobank'],
     totalOutstandingSet: { shopMoney: { amount: '420.00', currencyCode: 'UAH' } },
     lineItems: {
       edges: [
@@ -62,6 +67,7 @@ describe('getOrderForInvoice', () => {
 
     expect(order?.totalOutstandingKopecks).toBe(42000);
     expect(order?.currencyCode).toBe('UAH');
+    expect(order?.paymentGatewayNames).toEqual(['monobank']);
     expect(order?.lineItems).toEqual([
       {
         title: 'Літофан "Кіт"',

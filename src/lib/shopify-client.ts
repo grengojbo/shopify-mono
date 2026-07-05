@@ -18,6 +18,7 @@ const ORDER_FOR_INVOICE_QUERY = `
       name
       displayFinancialStatus
       statusPageUrl
+      paymentGatewayNames
       totalOutstandingSet {
         shopMoney {
           amount
@@ -53,6 +54,8 @@ export type OrderForInvoice = {
   name: string;
   financialStatus: string;
   statusPageUrl: string | null;
+  /** Назви методів оплати замовлення; для ручних методів — їхня назва з налаштувань. */
+  paymentGatewayNames: string[];
   totalOutstandingKopecks: number;
   currencyCode: string;
   lineItems: OrderLineItem[];
@@ -82,6 +85,7 @@ type GraphqlOrderNode = {
   name: string;
   displayFinancialStatus: string;
   statusPageUrl: string | null;
+  paymentGatewayNames: string[];
   totalOutstandingSet: { shopMoney: { amount: string; currencyCode: string } };
   lineItems: { edges: Array<{ node: GraphqlLineItemNode }> };
 };
@@ -99,7 +103,8 @@ function mapLineItem(node: GraphqlLineItemNode): OrderLineItem {
 
 export type ShopifyClientOptions = {
   storeDomain: string;
-  adminToken: string;
+  /** Постачальник Admin-токена (client credentials grant, кешується провайдером). */
+  getAccessToken: () => Promise<string>;
   fetch?: typeof fetch;
 };
 
@@ -168,12 +173,13 @@ export function createShopifyClient(options: ShopifyClientOptions): ShopifyClien
   const fetchImpl = options.fetch ?? fetch;
 
   async function graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+    const accessToken = await options.getAccessToken();
     const response = await fetchImpl(
       `https://${options.storeDomain}/admin/api/${ADMIN_API_VERSION}/graphql.json`,
       {
         method: 'POST',
         headers: {
-          'X-Shopify-Access-Token': options.adminToken,
+          'X-Shopify-Access-Token': accessToken,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ query, variables }),
@@ -215,6 +221,7 @@ export function createShopifyClient(options: ShopifyClientOptions): ShopifyClien
         name: order.name,
         financialStatus: order.displayFinancialStatus,
         statusPageUrl: order.statusPageUrl,
+        paymentGatewayNames: order.paymentGatewayNames,
         totalOutstandingKopecks: uahToKopecks(order.totalOutstandingSet.shopMoney.amount),
         currencyCode: order.totalOutstandingSet.shopMoney.currencyCode,
         lineItems: order.lineItems.edges.map((edge) => mapLineItem(edge.node)),
