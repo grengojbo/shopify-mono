@@ -119,7 +119,7 @@ wrangler secret put CAPTURE_TOKEN
 
 Кроки для `Bbox-Worker-Integration` (він у тебе вже створений):
 
-1. У конфігурації апа в Dev Dashboard задай **Admin API scopes**: `read_orders, write_orders` (розділ Access/доступи у налаштуваннях версії апа).
+1. У конфігурації апа в Dev Dashboard задай **Admin API scopes**: `read_orders, write_orders, read_products` (розділ Access/доступи у налаштуваннях версії апа). `read_products` потрібен, бо `/create-invoice` читає теги товарів у позиціях замовлення (визначення `hold` за тегом `made-to-order`, PRD §7) — без нього Admin API відповідає «Access denied for product field».
 2. **Встанови app на магазин** (custom distribution → install link → інсталяція). Без інсталяції client credentials grant не видасть токен для магазину.
 3. Скопіюй «ИД клиента» і «Секрет» зі сторінки апа та збережи як секрети Worker'а:
 
