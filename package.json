@@ -13,7 +13,7 @@
     "test:coverage:critical": "vitest run --coverage --config vitest.critical.config.ts --passWithNoTests"
   },
   "dependencies": {
-    "hono": "^4.12.27"
+    "hono": "^4.13.5"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.2",
@@ -21,6 +21,6 @@
     "@vitest/coverage-v8": "^4.1.9",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9",
-    "wrangler": "^4.114.0"
+    "wrangler": "^4.127.1"
   }
 }

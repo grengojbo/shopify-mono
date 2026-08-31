@@ -58,20 +58,29 @@ jobs:
           fail-on-severity: high
 
   npm-audit:
-    name: npm audit
+    name: npm audit (${{ matrix.project }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both lockfiles must be audited — app/ has its own dependency tree and
+        # was invisible to this job while it only ever installed the root one.
+        project: [".", "app"]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
+          cache-dependency-path: ${{ matrix.project }}/package-lock.json
 
       - name: Install dependencies
+        working-directory: ${{ matrix.project }}
         run: npm ci
 
       - name: Audit for high/critical vulnerabilities
+        working-directory: ${{ matrix.project }}
         run: npm audit --audit-level=high
 
   wrangler-config-check:
