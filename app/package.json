@@ -14,5 +14,8 @@
   },
   "devDependencies": {
     "typescript": "^6.0.3"
+  },
+  "overrides": {
+    "brace-expansion@2": "^2.1.4"
   }
 }
