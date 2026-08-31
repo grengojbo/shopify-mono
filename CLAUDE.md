@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A **Cloudflare Worker** that lets the Shopify store **Bbox** (non-Plus, Shopify Payments unavailable in Ukraine) accept online payments via **monobank acquiring (plata by mono)**, with automatic fiscalization through **Вчасно.Каса** and reminders for unpaid orders. Full requirements live in [PRD.md](PRD.md) — read it before making architectural decisions; this file is a working-agreement summary, not a replacement.
 
-The project is greenfield: no `src/` yet. Follow PRD.md §16 ("Етапи для Claude Code") for build order — shared core first (Hono skeleton → mono client → `/create-invoice` → `/mono-webhook` → `/capture` → `/cron`), Shopify UI Extension after, Path B last.
+The shared core is built: `src/routes/` has `/create-invoice`, `/mono-webhook`, `/capture`; `src/cron.ts` handles the schedule; `src/lib/` holds the mono client, ECDSA verifier, money helpers, and Shopify Admin client; `migrations/0001_init.sql` defines the D1 schema. The Path A UI Extension lives in `app/extensions/mono-pay-button/`. Path B (`/payment-session`, Payments Apps API) is still pending Payments Partner approval — see PRD.md §16 for the remaining order of work.
 
 ## Language
 
@@ -63,17 +63,17 @@ This is a **financial integration** — it moves real money and issues real fisc
 
 ### GitHub Actions
 
-Two workflows already exist in `.github/workflows/`, both required to pass before merge to `main`:
+Four workflows live in `.github/workflows/`. `ci.yml` and `security.yml` gate every merge to `main`; `deploy-worker.yml` and `deploy-app.yml` ship the Worker and the Shopify app after merge:
 
-- **`ci.yml`** — install → typecheck → lint → unit tests with coverage → a dedicated coverage-threshold check on security-critical modules (mono client, ECDSA verifier, webhook handler) → `wrangler deploy --dry-run` to catch config drift. It expects `npm run typecheck`, `npm run lint`, `npm run test:coverage`, and `npm run test:coverage:critical` scripts in `package.json`, plus a `CLOUDFLARE_API_TOKEN` repo secret for the dry-run — none of these exist yet, so this workflow will fail until the project is scaffolded. Add the scripts as part of the Hono skeleton step (PRD.md §16.1), not by weakening the workflow.
+- **`ci.yml`** — install → typecheck → lint → unit tests with coverage → a dedicated coverage-threshold check on security-critical modules (mono client, ECDSA verifier, webhook handler) → `wrangler deploy --dry-run` to catch config drift. It drives the `typecheck`, `lint`, `test:coverage`, and `test:coverage:critical` scripts in `package.json`, and uses the `CLOUDFLARE_API_TOKEN` repo secret for the dry-run — all of which are in place. If a step starts failing, fix the code or the config, never weaken the workflow.
 - **`security.yml`** — runs on every PR, on push to `main`, and weekly on a schedule:
   - **CodeQL** (JavaScript/TypeScript) for SAST.
   - **gitleaks** secret scanning over the diff — catches an accidentally committed `MONO_TOKEN` before it merges.
   - **`dependency-review-action`** on PRs, failing on high/critical severity (small dependency surface is itself a control here — prefer zero-dep implementations for crypto/HTTP where Workers' built-ins suffice).
-  - **`npm audit --audit-level=high`** — same threshold, runs on every push too (needs `package-lock.json` to exist).
-  - **`wrangler.toml [vars]` lint** — fails the build if a `[vars]` key looks like a token/secret/key/password; a no-op until `wrangler.toml` exists.
+  - **`npm audit --audit-level=high`** — same threshold, runs on every push too, as a matrix over **both** lockfiles (root and `app/`). `app/` has its own dependency tree; a new npm project anywhere in the repo must be added to that matrix, or its vulnerabilities stay invisible to CI while the build shows green. Pin a transitive fix with `overrides` in the relevant `package.json` so an upstream bump cannot silently revert it — a lockfile entry alone is not a guarantee.
+  - **`wrangler.toml [vars]` lint** — fails the build if a `[vars]` key looks like a token/secret/key/password.
 
-Branch protection on `main` should require both workflows green plus at least one review before merge — this repo has no staging environment fallback for a bad deploy touching real payments.
+Branch protection on `main` should require every check from both workflows green before merge, with force pushes and deletions disabled — this repo has no staging environment fallback for a bad deploy touching real payments. Required approvals stay **off** while this is a one-person repo: GitHub forbids approving your own PR, so requiring a review would block every merge and push the owner into routine admin bypass, which is weaker than no rule at all. Turn approvals on the moment a second contributor joins, and leave "Do not allow bypassing" off until then so the owner keeps an emergency path.
 
 ## Conventions
 
