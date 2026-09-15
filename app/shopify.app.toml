@@ -1,16 +1,18 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "801e6eeb5d03d24e1e0b3e13d6f0a305"
+client_id = "a8d68318a7c943133e3b2ad0e4b3593d"
+name = "bbox-mono-pay"
 application_url = "https://example.com"
 embedded = true
-name = "bbox-mono-pay"
 
 [webhooks]
-api_version = "2026-10"
+api_version = "2026-07"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
 scopes = ""
+optional_scopes = [ ]
+use_legacy_install_flow = false
 
 [auth]
 redirect_urls = [ ]
