@@ -351,6 +351,63 @@ describe('POST /mono-webhook — статуси', () => {
     expect(batchArg).toHaveLength(2); // log + update
   });
 
+  it('запізнілий ретрай success після reversed → лише лог: повернутий платіж не стає Paid', async () => {
+    const f = await makeFixture({
+      invoiceRow: { order_id: 'gid://shopify/Order/77', payment_type: 'debit', status: 'reversed' },
+    });
+
+    const res = await post(f.app, SUCCESS_BODY, await f.xSign(SUCCESS_BODY));
+
+    expect(res.status).toBe(200);
+    expect(f.shopify.orderMarkAsPaid).not.toHaveBeenCalled();
+    const batchArg = f.batch.mock.calls[0]?.[0] as unknown[];
+    expect(batchArg).toHaveLength(1); // лише webhook_log
+  });
+
+  for (const late of ['failure', 'expired']) {
+    it(`${late} після success → лише лог: оплачений інвойс не знецінюється`, async () => {
+      const f = await makeFixture({
+        invoiceRow: {
+          order_id: 'gid://shopify/Order/77',
+          payment_type: 'debit',
+          status: 'success',
+        },
+      });
+      const body = JSON.stringify({ invoiceId: 'p2_9ZgpZVsl3', status: late });
+
+      const res = await post(f.app, body, await f.xSign(body));
+
+      expect(res.status).toBe(200);
+      const batchArg = f.batch.mock.calls[0]?.[0] as unknown[];
+      expect(batchArg).toHaveLength(1);
+    });
+  }
+
+  it('success після success без запису в лозі (cron-backstop) → реквізити платежу дозаписуються', async () => {
+    const f = await makeFixture({
+      invoiceRow: { order_id: 'gid://shopify/Order/77', payment_type: 'debit', status: 'success' },
+    });
+
+    const res = await post(f.app, SUCCESS_BODY, await f.xSign(SUCCESS_BODY));
+
+    expect(res.status).toBe(200);
+    const batchArg = f.batch.mock.calls[0]?.[0] as unknown[];
+    expect(batchArg).toHaveLength(2); // log + update з approval_code/rrn
+  });
+
+  it('success після failure → оплата справжня: mark-paid і UPDATE', async () => {
+    const f = await makeFixture({
+      invoiceRow: { order_id: 'gid://shopify/Order/77', payment_type: 'debit', status: 'failure' },
+    });
+
+    const res = await post(f.app, SUCCESS_BODY, await f.xSign(SUCCESS_BODY));
+
+    expect(res.status).toBe(200);
+    expect(f.shopify.orderMarkAsPaid).toHaveBeenCalledWith('gid://shopify/Order/77');
+    const batchArg = f.batch.mock.calls[0]?.[0] as unknown[];
+    expect(batchArg).toHaveLength(2);
+  });
+
   it('final_amount/approval_code/rrn з вебхука потрапляють в UPDATE', async () => {
     const f = await makeFixture();
 
