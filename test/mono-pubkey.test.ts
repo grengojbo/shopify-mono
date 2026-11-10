@@ -80,6 +80,47 @@ describe('createPubkeyProvider', () => {
     expect(fetchKey).toHaveBeenCalledTimes(2);
   });
 
+  it('повторний refresh у межах паузи не йде в mono — віддає вже завантажений ключ', async () => {
+    const fetchKey = vi.fn(async () => makeMonoStyleKey());
+    let nowMs = 1_000_000;
+    const provider = createPubkeyProvider(fetchKey, { now: () => nowMs });
+    await provider.get();
+
+    const refreshed = await provider.refresh();
+    // Шквал вебхуків із невалідним підписом: кожен просить «свіжий» ключ
+    for (let i = 0; i < 20; i += 1) {
+      nowMs += 1000;
+      expect(await provider.refresh()).toBe(refreshed);
+    }
+
+    expect(fetchKey).toHaveBeenCalledTimes(2); // get + один refresh
+  });
+
+  it('після паузи refresh знову завантажує ключ (справжня ротація не блокується назавжди)', async () => {
+    const fetchKey = vi.fn(async () => makeMonoStyleKey());
+    let nowMs = 1_000_000;
+    const provider = createPubkeyProvider(fetchKey, { now: () => nowMs });
+
+    const first = await provider.refresh();
+    nowMs += 60_000;
+    const second = await provider.refresh();
+
+    expect(second).not.toBe(first);
+    expect(fetchKey).toHaveBeenCalledTimes(2);
+  });
+
+  it('refresh у межах паузи після невдалого завантаження пробує знову (кеш порожній)', async () => {
+    const fetchKey = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new Error('mono down'))
+      .mockResolvedValueOnce(await makeMonoStyleKey());
+    const provider = createPubkeyProvider(fetchKey, { now: () => 1_000_000 });
+
+    await expect(provider.refresh()).rejects.toThrow('mono down');
+    await expect(provider.refresh()).resolves.toBeDefined();
+    expect(fetchKey).toHaveBeenCalledTimes(2);
+  });
+
   it('конкурентні get роблять лише один fetch', async () => {
     const fetchKey = vi.fn().mockResolvedValue(await makeMonoStyleKey());
     const provider = createPubkeyProvider(fetchKey);
