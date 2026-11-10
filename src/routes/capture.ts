@@ -40,11 +40,27 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+/**
+ * Незаданий секрет — це «нікому не можна», а не «можна всім». Без цієї
+ * перевірки порожній CAPTURE_TOKEN дорівнював порожньому токену із запиту
+ * без Authorization, і /capture списував кошти будь-кому.
+ *
+ * `secret: unknown` — бо тип Env обіцяє рядок, а в рантаймі секрет, не заданий
+ * через `wrangler secret put`, приходить як undefined.
+ */
+function isAuthorized(presented: string, secret: unknown): boolean {
+  if (typeof secret !== 'string' || secret.length === 0) {
+    console.error('capture: CAPTURE_TOKEN не налаштовано — усі запити відхиляються');
+    return false;
+  }
+  return timingSafeEqual(presented, secret);
+}
+
 export function captureHandler(deps: CaptureDeps) {
   return async (c: Context) => {
     const authorization = c.req.header('Authorization') ?? '';
     const token = authorization.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : '';
-    if (!timingSafeEqual(token, deps.captureToken)) {
+    if (!isAuthorized(token, deps.captureToken)) {
       return c.json({ error: 'unauthorized' }, 401);
     }
 

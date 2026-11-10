@@ -92,6 +92,39 @@ describe('POST /capture — авторизація', () => {
   });
 });
 
+describe('POST /capture — секрет не налаштовано (fail-closed)', () => {
+  // undefined — секрет не задано через `wrangler secret put`; тип Env цього не ловить
+  const UNSET_VALUES: Array<[string, string | undefined]> = [
+    ['undefined', undefined],
+    ['порожній рядок', ''],
+  ];
+
+  for (const [label, captureToken] of UNSET_VALUES) {
+    it(`CAPTURE_TOKEN = ${label}, запит без Authorization → 401, списання не відбувається`, async () => {
+      const db = makeDb(HOLD_ROW);
+      const mono = makeMono();
+      const app = makeApp({ db, mono, captureToken } as Parameters<typeof makeApp>[0]);
+
+      const res = await postCapture(app, { orderId: 'gid://shopify/Order/1' });
+
+      expect(res.status).toBe(401);
+      expect(db._first).not.toHaveBeenCalled();
+      expect(mono.finalizeInvoice).not.toHaveBeenCalled();
+    });
+
+    it(`CAPTURE_TOKEN = ${label}, порожній Bearer → 401, списання не відбувається`, async () => {
+      const db = makeDb(HOLD_ROW);
+      const mono = makeMono();
+      const app = makeApp({ db, mono, captureToken } as Parameters<typeof makeApp>[0]);
+
+      const res = await postCapture(app, { orderId: 'gid://shopify/Order/1' }, '');
+
+      expect(res.status).toBe(401);
+      expect(mono.finalizeInvoice).not.toHaveBeenCalled();
+    });
+  }
+});
+
 describe('POST /capture — потік', () => {
   it('hold → finalize з invoiceId та amount із D1 → 202', async () => {
     const db = makeDb(HOLD_ROW);
