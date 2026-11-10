@@ -23,6 +23,11 @@ export type CreateInvoiceDeps = {
    * false — режим спостереження: розбіжність лише пишеться в лог.
    */
   enforceOrderBinding: boolean;
+  /**
+   * Адреса, куди mono шле вебхуки, — з конфігурації, не з origin запиту.
+   * null — PUBLIC_BASE_URL не задано або він некоректний: інвойси не створюються.
+   */
+  webHookUrl: string | null;
   /** Unix-час у секундах; ін'єктується для детермінованих тестів. */
   now: () => number;
 };
@@ -62,6 +67,14 @@ export function createInvoiceHandler(deps: CreateInvoiceDeps) {
   return async (c: Context) => {
     for (const [name, value] of Object.entries(CORS_HEADERS)) {
       c.header(name, value);
+    }
+
+    // Без адреси вебхука оплата пройшла б у mono, а Worker про неї не дізнався б —
+    // краще не видавати інвойс узагалі
+    const webHookUrl = deps.webHookUrl;
+    if (webHookUrl === null) {
+      console.error('create-invoice: PUBLIC_BASE_URL не задано або це не https-адреса');
+      return c.json({ error: 'server misconfigured' }, 500);
     }
 
     const authorization = c.req.header('Authorization') ?? '';
@@ -220,7 +233,6 @@ export function createInvoiceHandler(deps: CreateInvoiceDeps) {
     }
 
     const paymentType = resolvePaymentType(order.lineItems);
-    const webHookUrl = `${new URL(c.req.url).origin}/mono-webhook`;
 
     let invoice: { invoiceId: string; pageUrl: string };
     try {

@@ -13,6 +13,10 @@ compatibility_flags = ["nodejs_compat"]
 # Перемкнути на "true" після перевірки на реальному замовленні, що в логах
 # немає попереджень «номер підтвердження не збігається».
 ENFORCE_ORDER_BINDING = "false"
+# Публічна адреса Worker'а: з неї будується webHookUrl, який отримує mono.
+# Має збігатися з доменом із [[routes]] нижче. Для локальної розробки з тунелем
+# перевизначається в .dev.vars.
+PUBLIC_BASE_URL = "https://pay.bbox.kiev.ua"
 
 [[d1_databases]]
 binding = "bbox_payments"

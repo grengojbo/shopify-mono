@@ -70,9 +70,13 @@ function makeDb(overrides: { first?: unknown; runImpl?: () => Promise<unknown> }
 }
 
 const VALID_TOKEN = 'valid-session-token'; // фікстура
+const WEBHOOK_URL = 'https://pay.example.com/mono-webhook';
 
 function makeApp(
-  deps: Omit<CreateInvoiceDeps, 'verifyToken' | 'allowRequest' | 'enforceOrderBinding'> &
+  deps: Omit<
+    CreateInvoiceDeps,
+    'verifyToken' | 'allowRequest' | 'enforceOrderBinding' | 'webHookUrl'
+  > &
     Partial<CreateInvoiceDeps>,
 ) {
   const app = new Hono();
@@ -81,6 +85,7 @@ function makeApp(
     allowRequest: () => Promise.resolve(true),
     // Прив'язку до замовлення перевіряє create-invoice-active.test.ts
     enforceOrderBinding: false,
+    webHookUrl: WEBHOOK_URL,
     ...deps,
   };
   app.post('/create-invoice', createInvoiceHandler(fullDeps));
@@ -187,7 +192,7 @@ describe('POST /create-invoice — happy path', () => {
     );
   });
 
-  it('будує webHookUrl з origin запиту', async () => {
+  it('webHookUrl береться з конфігурації, а не з origin запиту', async () => {
     const shopify = {
       getOrderForInvoice: vi.fn().mockResolvedValue(makeOrder()),
       orderMarkAsPaid: vi.fn(),
@@ -199,12 +204,26 @@ describe('POST /create-invoice — happy path', () => {
     await postOrder(
       app,
       { orderId: 'gid://shopify/Order/1' },
-      'https://worker.example.com/create-invoice',
+      'https://other-host.example.net/create-invoice',
     );
 
     expect(mono.createInvoice).toHaveBeenCalledWith(
-      expect.objectContaining({ webHookUrl: 'https://worker.example.com/mono-webhook' }),
+      expect.objectContaining({ webHookUrl: WEBHOOK_URL }),
     );
+  });
+
+  it('без налаштованої адреси вебхука → 500, інвойс не створюється', async () => {
+    const shopify = { getOrderForInvoice: vi.fn(), orderMarkAsPaid: vi.fn() };
+    const mono = makeMonoClient();
+    const db = makeDb();
+    const app = makeApp({ shopify, mono, db, now: () => FIXED_NOW, webHookUrl: null });
+
+    const res = await postOrder(app, { orderId: 'gid://shopify/Order/1' });
+
+    expect(res.status).toBe(500);
+    expect(shopify.getOrderForInvoice).not.toHaveBeenCalled();
+    expect(mono.createInvoice).not.toHaveBeenCalled();
+    expect(db.prepare).not.toHaveBeenCalled();
   });
 
   it('не передає redirectUrl, якщо Shopify не повернув statusPageUrl', async () => {

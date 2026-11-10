@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { runCron } from './cron';
 import { createMonoClient } from './lib/mono-client';
 import { createPubkeyProvider, type PubkeyProvider } from './lib/mono-pubkey';
+import { resolveWebHookUrl } from './lib/public-url';
 import { checkRateLimit } from './lib/rate-limit';
 import { verifySessionToken } from './lib/session-token';
 import { type AdminTokenProvider, createAdminTokenProvider } from './lib/shopify-admin-token';
@@ -30,6 +31,11 @@ export type Env = {
    * Будь-що інше — режим спостереження (wrangler.toml [vars]).
    */
   ENFORCE_ORDER_BINDING?: string;
+  /**
+   * Публічна https-адреса Worker'а (wrangler.toml [vars]) — з неї будується
+   * webHookUrl для mono. Без неї /create-invoice відповідає 500.
+   */
+  PUBLIC_BASE_URL?: string;
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_CHAT_ID?: string;
 };
@@ -83,6 +89,7 @@ app.post('/create-invoice', (c) =>
         now: () => Math.floor(Date.now() / 1000),
       }),
     enforceOrderBinding: c.env.ENFORCE_ORDER_BINDING === 'true',
+    webHookUrl: resolveWebHookUrl(c.env.PUBLIC_BASE_URL),
     now: () => Math.floor(Date.now() / 1000),
   })(c),
 );
