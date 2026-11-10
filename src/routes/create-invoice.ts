@@ -20,10 +20,16 @@ export type CreateInvoiceDeps = {
   now: () => number;
 };
 
-type ExistingInvoiceRow = {
+type ActiveInvoiceRow = {
   invoice_id: string;
   page_url: string | null;
+  status: string;
 };
+
+// Той самий набір, що й у частковому унікальному індексі з міграції 0002:
+// поки інвойс у одному з цих статусів, новий для замовлення не створюється.
+const ACTIVE_INVOICE_SQL =
+  "SELECT invoice_id, page_url, status FROM invoices WHERE order_id = ? AND status IN ('created', 'processing', 'hold')";
 
 // Extension робить fetch із sandbox-origin чекауту — потрібен CORS.
 // `*` безпечний: запит не credentialed, авторизація — власним Bearer-токеном.
@@ -58,14 +64,19 @@ export function createInvoiceHandler(deps: CreateInvoiceDeps) {
     // (той самий числовий id, що й майбутній Order) — Admin API приймає лише Order.
     const orderId = rawOrderId.replace(/^gid:\/\/shopify\/OrderIdentity\//, 'gid://shopify/Order/');
 
-    const existing = await deps.db
-      .prepare(
-        "SELECT invoice_id, page_url FROM invoices WHERE order_id = ? AND status IN ('created', 'processing')",
-      )
-      .bind(orderId)
-      .first<ExistingInvoiceRow>();
+    const findActive = () =>
+      deps.db.prepare(ACTIVE_INVOICE_SQL).bind(orderId).first<ActiveInvoiceRow>();
+    const respondWithActive = (active: ActiveInvoiceRow) => {
+      if (active.status === 'hold') {
+        // Кошти вже заблоковано — платити вдруге не можна. 409 → extension ховає кнопку.
+        return c.json({ error: 'payment already authorized' }, 409);
+      }
+      return c.json({ invoiceId: active.invoice_id, pageUrl: active.page_url });
+    };
+
+    const existing = await findActive();
     if (existing) {
-      return c.json({ invoiceId: existing.invoice_id, pageUrl: existing.page_url });
+      return respondWithActive(existing);
     }
 
     let order: Awaited<ReturnType<typeof deps.shopify.getOrderForInvoice>>;
@@ -141,6 +152,16 @@ export function createInvoiceHandler(deps: CreateInvoiceDeps) {
         await deps.mono.removeInvoice({ invoiceId: invoice.invoiceId });
       } catch (removeErr) {
         console.error('mono removeInvoice after D1 failure also failed', removeErr);
+      }
+      // Найімовірніша причина — унікальний індекс: паралельний запит встиг
+      // записати свій інвойс першим. Тоді віддаємо його, а не помилку.
+      try {
+        const winner = await findActive();
+        if (winner) {
+          return respondWithActive(winner);
+        }
+      } catch (lookupErr) {
+        console.error('D1 lookup after insert failure also failed', lookupErr);
       }
       return c.json({ error: 'internal error' }, 500);
     }
