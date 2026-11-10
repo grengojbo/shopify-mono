@@ -8,6 +8,25 @@ import '@shopify/ui-extensions/preact';
 import { render } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 
+// Платіжна сторінка mono: pay.monobank.ua — бойова, pay.mbnk.biz — з офіційної документації.
+const MONO_PAY_HOSTS = ['pay.monobank.ua', 'pay.mbnk.biz'];
+
+// Кнопка веде покупця платити — посилання з відповіді Worker'а приймається лише
+// якщо це https-сторінка mono. Будь-що інше (підміна worker_url у налаштуваннях,
+// зламаний Worker) закінчується помилкою, а не переходом на чужий сайт.
+function isMonoPayUrl(value) {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && MONO_PAY_HOSTS.includes(url.hostname);
+  } catch {
+    // Не URL — так само не довіряємо
+    return false;
+  }
+}
+
 export default function extension() {
   render(<Extension />, document.body);
 }
@@ -59,6 +78,11 @@ function Extension() {
         }
 
         const data = await response.json();
+        if (cancelled) return;
+        if (!isMonoPayUrl(data?.pageUrl)) {
+          setState('error');
+          return;
+        }
         setPageUrl(data.pageUrl);
         setState('ready');
       } catch {
