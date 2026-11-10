@@ -100,6 +100,38 @@ describe('POST /create-invoice — кошти вже заблоковано (hol
   });
 });
 
+describe('POST /create-invoice — оплата з розбіжністю суми на розгляді оператора', () => {
+  it('списано не ту суму → 409: новий інвойс на повну суму означав би подвійну оплату', async () => {
+    const world = makeWorld();
+    await world.createInvoice();
+    world.raw
+      .prepare(
+        "UPDATE invoices SET status = 'success', final_amount = 100 WHERE invoice_id = 'inv1'",
+      )
+      .run();
+
+    const res = await world.createInvoice();
+
+    expect(res.status).toBe(409);
+    expect(world.mono.createInvoice).toHaveBeenCalledTimes(1);
+  });
+
+  it('звичайна успішна оплата не блокує новий інвойс (доплата після редагування замовлення)', async () => {
+    const world = makeWorld();
+    await world.createInvoice();
+    world.raw
+      .prepare(
+        "UPDATE invoices SET status = 'success', final_amount = 42000 WHERE invoice_id = 'inv1'",
+      )
+      .run();
+
+    const res = await world.createInvoice();
+
+    expect(res.status).toBe(200);
+    expect(world.mono.createInvoice).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('POST /create-invoice — одночасні запити для одного замовлення', () => {
   it('у D1 лишається один інвойс, зайвий mono-інвойс інвалідовано, обидві відповіді однакові', async () => {
     const world = makeWorld();
