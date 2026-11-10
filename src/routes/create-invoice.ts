@@ -24,12 +24,13 @@ type ActiveInvoiceRow = {
   invoice_id: string;
   page_url: string | null;
   status: string;
+  amount: number;
 };
 
 // Той самий набір, що й у частковому унікальному індексі з міграції 0002:
 // поки інвойс у одному з цих статусів, новий для замовлення не створюється.
 const ACTIVE_INVOICE_SQL =
-  "SELECT invoice_id, page_url, status FROM invoices WHERE order_id = ? AND status IN ('created', 'processing', 'hold')";
+  "SELECT invoice_id, page_url, status, amount FROM invoices WHERE order_id = ? AND status IN ('created', 'processing', 'hold')";
 
 // Extension робить fetch із sandbox-origin чекауту — потрібен CORS.
 // `*` безпечний: запит не credentialed, авторизація — власним Bearer-токеном.
@@ -78,7 +79,7 @@ export function createInvoiceHandler(deps: CreateInvoiceDeps) {
     };
 
     const existing = await findActive();
-    if (existing) {
+    if (existing?.status === 'hold') {
       return respondWithActive(existing);
     }
 
@@ -103,6 +104,10 @@ export function createInvoiceHandler(deps: CreateInvoiceDeps) {
     if (order.financialStatus === 'PAID') {
       return c.json({ error: 'order already paid' }, 409);
     }
+    if (order.cancelledAt !== null) {
+      // Оплата скасованого замовлення — це списання, яке доведеться повертати
+      return c.json({ error: 'order cancelled' }, 409);
+    }
     // Кнопка оплати — лише для замовлень з ручним методом «monobank»;
     // COD («Накладений платіж») та інші методи її не бачать (409 → extension
     // тихо ховає блок, як і для вже оплаченого замовлення)
@@ -117,6 +122,36 @@ export function createInvoiceHandler(deps: CreateInvoiceDeps) {
     }
     if (order.totalOutstandingKopecks <= 0) {
       return c.json({ error: 'nothing to pay' }, 422);
+    }
+
+    if (existing) {
+      // Наявний інвойс видається лише після перевірок замовлення вище і лише
+      // якщо його сума досі дорівнює залишку: замовлення могли відредагувати.
+      if (existing.amount === order.totalOutstandingKopecks) {
+        return respondWithActive(existing);
+      }
+      if (existing.status !== 'created') {
+        // processing — покупець саме платить за старою сумою; інвалідувати не можна
+        return c.json({ error: 'payment in progress' }, 409);
+      }
+      // Спершу прибрати старий у mono: два робочі посилання на різні суми
+      // гірші за помилку. Не вдалося — нового не створюємо.
+      try {
+        await deps.mono.removeInvoice({ invoiceId: existing.invoice_id });
+      } catch (err) {
+        console.error('mono removeInvoice для застарілого інвойсу впав', err);
+        return c.json({ error: 'payment provider error' }, 502);
+      }
+      const retired = await deps.db
+        .prepare(
+          "UPDATE invoices SET status = 'expired', modified_at = ? WHERE invoice_id = ? AND status = 'created'",
+        )
+        .bind(deps.now(), existing.invoice_id)
+        .run();
+      if (retired.meta.changes !== 1) {
+        // Статус змінився, поки ми працювали (вебхук) — нехай клієнт повторить запит
+        return c.json({ error: 'payment in progress' }, 409);
+      }
     }
 
     const paymentType = resolvePaymentType(order.lineItems);

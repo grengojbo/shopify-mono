@@ -15,6 +15,7 @@ function makeOrder(overrides: Partial<OrderForInvoice> = {}): OrderForInvoice {
     id: 'gid://shopify/Order/1',
     name: '#1001',
     financialStatus: 'PENDING',
+    cancelledAt: null,
     statusPageUrl: 'https://bbox.myshopify.com/orders/abc/status',
     totalOutstandingKopecks: 42000,
     currencyCode: 'UAH',
@@ -228,27 +229,6 @@ describe('POST /create-invoice — amount integrity', () => {
     await postOrder(app, { orderId: 'gid://shopify/Order/1', amount: 1 });
 
     expect(mono.createInvoice).toHaveBeenCalledWith(expect.objectContaining({ amount: 99900 }));
-  });
-});
-
-describe('POST /create-invoice — ідемпотентність', () => {
-  it('повертає наявний created-інвойс без повторного виклику mono', async () => {
-    const shopify = { getOrderForInvoice: vi.fn(), orderMarkAsPaid: vi.fn() };
-    const mono = makeMonoClient();
-    const db = makeDb({
-      first: { invoice_id: 'p2_existing', page_url: 'https://pay.mbnk.biz/p2_existing' },
-    });
-    const app = makeApp({ shopify, mono, db, now: () => FIXED_NOW });
-
-    const res = await postOrder(app, { orderId: 'gid://shopify/Order/1' });
-
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      invoiceId: 'p2_existing',
-      pageUrl: 'https://pay.mbnk.biz/p2_existing',
-    });
-    expect(shopify.getOrderForInvoice).not.toHaveBeenCalled();
-    expect(mono.createInvoice).not.toHaveBeenCalled();
   });
 });
 

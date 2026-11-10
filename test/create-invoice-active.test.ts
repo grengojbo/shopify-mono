@@ -18,6 +18,7 @@ function makeOrder(productTags: string[]): OrderForInvoice {
     id: ORDER_ID,
     name: '#1001',
     financialStatus: 'PENDING',
+    cancelledAt: null,
     statusPageUrl: null,
     totalOutstandingKopecks: 42000,
     currencyCode: 'UAH',
@@ -46,7 +47,9 @@ function makeWorld(productTags: string[] = []) {
     removeInvoice: vi.fn(async (_args: { invoiceId: string }) => undefined),
     finalizeInvoice: vi.fn(async () => ({ status: 'success' as const })),
   };
-  const shopify = { getOrderForInvoice: vi.fn(async () => makeOrder(productTags)) };
+  // Замовлення можна змінити між запитами — як це робить продавець в адмінці
+  const order = makeOrder(productTags);
+  const shopify = { getOrderForInvoice: vi.fn(async () => ({ ...order })) };
   const now = () => FIXED_NOW;
 
   const app = new Hono();
@@ -66,6 +69,7 @@ function makeWorld(productTags: string[] = []) {
   return {
     raw,
     mono,
+    order,
     createInvoice: () => post('/create-invoice', 'session-token-fixture'),
     capture: () => post('/capture', CAPTURE_TOKEN),
     setStatus: (invoiceId: string, status: string) =>
@@ -129,6 +133,114 @@ describe('POST /create-invoice — оплата з розбіжністю сум
 
     expect(res.status).toBe(200);
     expect(world.mono.createInvoice).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('POST /create-invoice — наявний інвойс і поточний стан замовлення', () => {
+  it('сума не змінилась → повертається той самий інвойс, mono не викликається', async () => {
+    const world = makeWorld();
+    await world.createInvoice();
+
+    const res = await world.createInvoice();
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ invoiceId: 'inv1', pageUrl: 'https://pay.mbnk.biz/inv1' });
+    expect(world.mono.createInvoice).toHaveBeenCalledTimes(1);
+    expect(world.mono.removeInvoice).not.toHaveBeenCalled();
+  });
+
+  it('замовлення відредаговано → старий інвойс інвалідовано, новий — на актуальну суму', async () => {
+    const world = makeWorld();
+    await world.createInvoice();
+    world.order.totalOutstandingKopecks = 50000;
+
+    const res = await world.createInvoice();
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ invoiceId: 'inv2' });
+    expect(world.mono.removeInvoice).toHaveBeenCalledWith({ invoiceId: 'inv1' });
+    expect(world.mono.createInvoice).toHaveBeenLastCalledWith(
+      expect.objectContaining({ amount: 50000 }),
+    );
+    expect(world.rows()).toEqual([
+      { invoice_id: 'inv1', status: 'expired' },
+      { invoice_id: 'inv2', status: 'created' },
+    ]);
+  });
+
+  it('застарілий інвойс не вдалося інвалідувати → 502, нового немає: два платні посилання гірші за помилку', async () => {
+    const world = makeWorld();
+    await world.createInvoice();
+    world.order.totalOutstandingKopecks = 50000;
+    world.mono.removeInvoice.mockRejectedValueOnce(new Error('mono down'));
+
+    const res = await world.createInvoice();
+
+    expect(res.status).toBe(502);
+    expect(world.mono.createInvoice).toHaveBeenCalledTimes(1);
+    expect(world.rows()).toEqual([{ invoice_id: 'inv1', status: 'created' }]);
+  });
+
+  it('статус застарілого інвойсу змінився під час інвалідації → 409, нового немає', async () => {
+    const world = makeWorld();
+    await world.createInvoice();
+    world.order.totalOutstandingKopecks = 50000;
+    // Вебхук встиг перевести інвойс у hold, поки ми зверталися до mono
+    world.mono.removeInvoice.mockImplementationOnce(async () => {
+      world.setStatus('inv1', 'hold');
+      return undefined;
+    });
+
+    const res = await world.createInvoice();
+
+    expect(res.status).toBe(409);
+    expect(world.mono.createInvoice).toHaveBeenCalledTimes(1);
+    expect(world.rows()).toEqual([{ invoice_id: 'inv1', status: 'hold' }]);
+  });
+
+  it('застарілий інвойс уже оплачують (processing) → 409, нічого не інвалідуємо', async () => {
+    const world = makeWorld();
+    await world.createInvoice();
+    world.setStatus('inv1', 'processing');
+    world.order.totalOutstandingKopecks = 50000;
+
+    const res = await world.createInvoice();
+
+    expect(res.status).toBe(409);
+    expect(world.mono.removeInvoice).not.toHaveBeenCalled();
+    expect(world.mono.createInvoice).toHaveBeenCalledTimes(1);
+  });
+
+  it('замовлення скасовано → 409, посилання на наявний інвойс більше не видається', async () => {
+    const world = makeWorld();
+    await world.createInvoice();
+    world.order.cancelledAt = '2027-01-15T10:00:00Z';
+
+    const res = await world.createInvoice();
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'order cancelled' });
+  });
+
+  it('скасоване замовлення без інвойсу → 409, інвойс не створюється', async () => {
+    const world = makeWorld();
+    world.order.cancelledAt = '2027-01-15T10:00:00Z';
+
+    const res = await world.createInvoice();
+
+    expect(res.status).toBe(409);
+    expect(world.mono.createInvoice).not.toHaveBeenCalled();
+    expect(world.rows()).toEqual([]);
+  });
+
+  it('замовлення вже PAID → 409, навіть якщо в D1 лишився активний інвойс', async () => {
+    const world = makeWorld();
+    await world.createInvoice();
+    world.order.financialStatus = 'PAID';
+
+    const res = await world.createInvoice();
+
+    expect(res.status).toBe(409);
   });
 });
 

@@ -25,6 +25,7 @@ function orderNode(overrides: Record<string, unknown> = {}) {
     id: 'gid://shopify/Order/1',
     name: '#1001',
     displayFinancialStatus: 'PENDING',
+    cancelledAt: null,
     statusPageUrl: 'https://bbox-test.myshopify.com/orders/abc/status',
     paymentGatewayNames: ['monobank'],
     totalOutstandingSet: { shopMoney: { amount: '420.00', currencyCode: 'UAH' } },
@@ -78,6 +79,26 @@ describe('getOrderForInvoice', () => {
         productTags: [],
       },
     ]);
+  });
+
+  it('прокидає cancelledAt: null для чинного замовлення, час — для скасованого', async () => {
+    const live = vi.fn().mockResolvedValue(graphqlResponse({ order: orderNode() }));
+    const cancelled = vi
+      .fn()
+      .mockResolvedValue(
+        graphqlResponse({ order: orderNode({ cancelledAt: '2027-01-15T10:00:00Z' }) }),
+      );
+
+    expect((await makeClient(live).getOrderForInvoice('gid://shopify/Order/1'))?.cancelledAt).toBe(
+      null,
+    );
+    expect(
+      (await makeClient(cancelled).getOrderForInvoice('gid://shopify/Order/1'))?.cancelledAt,
+    ).toBe('2027-01-15T10:00:00Z');
+    const body = JSON.parse((live.mock.calls[0] as [string, RequestInit])[1].body as string) as {
+      query: string;
+    };
+    expect(body.query).toContain('cancelledAt');
   });
 
   it('прокидає теги товару в кожну позицію', async () => {
