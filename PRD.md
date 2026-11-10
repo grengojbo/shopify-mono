@@ -200,6 +200,12 @@ CREATE TABLE invoices (
 CREATE INDEX idx_invoices_order  ON invoices(order_id);
 CREATE INDEX idx_invoices_status ON invoices(status);
 
+-- Міграція 0002: один активний інвойс на замовлення (захист від подвійного
+-- інвойсу при одночасних запитах і від другого блокування коштів на hold).
+CREATE UNIQUE INDEX idx_invoices_one_active_per_order
+  ON invoices(order_id)
+  WHERE status IN ('created', 'processing', 'hold');
+
 CREATE TABLE webhook_log (        -- ідемпотентність + аудит
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   invoice_id  TEXT NOT NULL,
