@@ -114,11 +114,12 @@ export function monoWebhookHandler(deps: MonoWebhookDeps) {
     }
 
     // Ідемпотентність: той самий invoiceId+status уже оброблено → 200 без дій
-    const alreadyLogged = await deps.db
-      .prepare('SELECT id FROM webhook_log WHERE invoice_id = ? AND status = ? LIMIT 1')
-      .bind(invoiceId, status)
-      .first();
-    if (alreadyLogged) {
+    const findLogged = () =>
+      deps.db
+        .prepare('SELECT id FROM webhook_log WHERE invoice_id = ? AND status = ? LIMIT 1')
+        .bind(invoiceId, status)
+        .first();
+    if (await findLogged()) {
       return c.json({ ok: true });
     }
 
@@ -190,6 +191,16 @@ export function monoWebhookHandler(deps: MonoWebhookDeps) {
     try {
       await deps.db.batch(statements);
     } catch (err) {
+      // Унікальний індекс webhook_log (міграція 0004): паралельний вебхук із тим
+      // самим invoiceId+status встиг записатись першим. Batch атомарний, тож наш
+      // UPDATE теж не застосувався — усе вже зроблено тим запитом.
+      try {
+        if (await findLogged()) {
+          return c.json({ ok: true });
+        }
+      } catch (lookupErr) {
+        console.error('mono webhook: повторний пошук у webhook_log впав', lookupErr);
+      }
       console.error('mono webhook: запис у D1 впав — вебхук не підтверджуємо', err);
       return c.json({ error: 'storage error' }, 500);
     }

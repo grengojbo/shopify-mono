@@ -1,6 +1,6 @@
 // Клієнт Shopify Admin API (GraphQL) — читання замовлення перед створенням
 // mono-інвойсу (PRD §5). Поля звірені через shopify-plugin:shopify-admin
-// (Admin API 2025-10): Order.totalOutstandingSet, Order.displayFinancialStatus,
+// (Admin API 2026-10): Order.totalOutstandingSet, Order.displayFinancialStatus,
 // Order.statusPageUrl (nullable, опційні аргументи).
 //
 // Сума й ціни позицій нормалізуються тут-таки у цілі копійки (money.ts) —
@@ -9,7 +9,10 @@
 import type { OrderLineItem } from './invoice-mapping';
 import { uahToKopecks } from './money';
 
-const ADMIN_API_VERSION = '2025-10';
+// Shopify підтримує версію 12 місяців, після чого мовчки підставляє найстарішу
+// з підтримуваних — тобто код працює на схемі, якої ніхто не обирав і не
+// перевіряв. Оновлювати раз на рік, звіряючи поля нижче зі схемою нової версії.
+const ADMIN_API_VERSION = '2026-10';
 
 const ORDER_FOR_INVOICE_QUERY = `
   query OrderForInvoice($id: ID!) {

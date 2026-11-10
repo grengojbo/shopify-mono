@@ -41,7 +41,15 @@ function cleanupRow(overrides: Partial<Row> = {}): Row {
 
 type DbCall = { sql: string; params: unknown[] };
 
-function makeDb(options: { reminderRows?: Row[]; cleanupRows?: Row[]; claimChanges?: number }) {
+function makeDb(options: {
+  reminderRows?: Row[];
+  cleanupRows?: Row[];
+  /** Інвойси, що померли самі (failure/expired) і ще не пройшли чистку. */
+  deadRows?: Row[];
+  /** Чи є в замовлення інший інвойс, через який його не можна скасовувати. */
+  hasOtherLiveInvoice?: boolean;
+  claimChanges?: number;
+}) {
   const calls: DbCall[] = [];
   const db = {
     prepare(sql: string) {
@@ -51,11 +59,17 @@ function makeDb(options: { reminderRows?: Row[]; cleanupRows?: Row[]; claimChang
           return statement;
         },
         all: vi.fn(() => {
-          const isReminderSelect = sql.includes('reminder_count = 0');
-          return Promise.resolve({
-            results: isReminderSelect ? (options.reminderRows ?? []) : (options.cleanupRows ?? []),
-          });
+          let results = options.cleanupRows ?? [];
+          if (sql.includes('reminder_count = 0')) {
+            results = options.reminderRows ?? [];
+          } else if (sql.includes('cleanup_done_at IS NULL')) {
+            results = options.deadRows ?? [];
+          }
+          return Promise.resolve({ results });
         }),
+        first: vi.fn(() =>
+          Promise.resolve(options.hasOtherLiveInvoice ? { invoice_id: 'x' } : null),
+        ),
         run: vi.fn(() =>
           Promise.resolve({
             success: true,
@@ -76,6 +90,8 @@ function liveStatus(status: string, extra: Partial<InvoiceStatusResponse> = {}) 
 function makeDeps(options: {
   reminderRows?: Row[];
   cleanupRows?: Row[];
+  deadRows?: Row[];
+  hasOtherLiveInvoice?: boolean;
   claimChanges?: number;
   invoiceStatusImpl?: (invoiceId: string) => Promise<InvoiceStatusResponse>;
   removeImpl?: () => Promise<void>;
@@ -93,10 +109,11 @@ function makeDeps(options: {
   // Залишок замовлення в Shopify дорівнює сумі його інвойсу з вибірки —
   // якщо тест не задає іншого через orderImpl
   const amountByOrder = new Map(
-    [...(options.reminderRows ?? []), ...(options.cleanupRows ?? [])].map((row) => [
-      row.order_id,
-      row.amount,
-    ]),
+    [
+      ...(options.reminderRows ?? []),
+      ...(options.cleanupRows ?? []),
+      ...(options.deadRows ?? []),
+    ].map((row) => [row.order_id, row.amount]),
   );
   const shopify = {
     getOrderForInvoice: vi.fn(
@@ -341,7 +358,7 @@ describe('runCron — чистка 24h+', () => {
     expect(f.mono.removeInvoice).toHaveBeenCalledWith({ invoiceId: 'p2_old1' });
     expect(f.shopify.orderCancel).toHaveBeenCalledWith('gid://shopify/Order/2');
     const update = f.calls.find((c) => c.sql.includes('SET status = ?'));
-    expect(update?.params).toEqual(['expired', FIXED_NOW, 'p2_old1']);
+    expect(update?.params).toEqual(['expired', FIXED_NOW, FIXED_NOW, 'p2_old1']);
   });
 
   it('orderCancel впав → D1 НЕ оновлено (наступний прогін повторить)', async () => {
@@ -428,6 +445,111 @@ describe('runCron — чистка 24h+', () => {
 
     expect(f.shopify.orderCancel).toHaveBeenCalledTimes(1);
     expect(f.shopify.orderCancel).toHaveBeenCalledWith('gid://shopify/Order/3');
+  });
+});
+
+describe('runCron — чистка після інвойсу, що помер сам (failure/expired)', () => {
+  const shopifyOrder = (overrides: Partial<OrderForInvoice>) => () =>
+    Promise.resolve({
+      id: 'gid://shopify/Order/2',
+      name: '#1002',
+      financialStatus: 'PENDING',
+      cancelledAt: null,
+      confirmationNumber: 'XPAV284CT',
+      statusPageUrl: null,
+      totalOutstandingKopecks: 15000,
+      currencyCode: 'UAH',
+      paymentGatewayNames: ['monobank'],
+      lineItems: [],
+      ...overrides,
+    });
+  const marked = (f: ReturnType<typeof makeDeps>) =>
+    f.calls.find((c) => c.sql.includes('SET cleanup_done_at'));
+
+  it('замовлення досі неоплачене → скасовується, інвойс позначається перевіреним', async () => {
+    const f = makeDeps({ deadRows: [cleanupRow()] });
+
+    await runCron(f.deps);
+
+    expect(f.shopify.orderCancel).toHaveBeenCalledWith('gid://shopify/Order/2');
+    expect(marked(f)?.params).toEqual([FIXED_NOW, 'p2_old1']);
+    // mono не питаємо: інвойс уже термінальний, оплатити його неможливо
+    expect(f.mono.invoiceStatus).not.toHaveBeenCalled();
+    expect(f.mono.removeInvoice).not.toHaveBeenCalled();
+  });
+
+  it('у замовлення є інший живий або оплачений інвойс → не скасовуємо, але позначаємо перевіреним', async () => {
+    const f = makeDeps({ deadRows: [cleanupRow()], hasOtherLiveInvoice: true });
+
+    await runCron(f.deps);
+
+    expect(f.shopify.orderCancel).not.toHaveBeenCalled();
+    expect(f.shopify.getOrderForInvoice).not.toHaveBeenCalled();
+    expect(marked(f)).toBeDefined();
+  });
+
+  const untouchable: Array<[string, Partial<OrderForInvoice>]> = [
+    ['оплачене іншим способом (PAID)', { financialStatus: 'PAID' }],
+    ['частково оплачене', { financialStatus: 'PARTIALLY_PAID' }],
+    ['уже скасоване', { cancelledAt: '2027-01-15T10:00:00Z' }],
+  ];
+  for (const [label, overrides] of untouchable) {
+    it(`замовлення ${label} → не скасовуємо, позначаємо перевіреним`, async () => {
+      const f = makeDeps({ deadRows: [cleanupRow()], orderImpl: shopifyOrder(overrides) });
+
+      await runCron(f.deps);
+
+      expect(f.shopify.orderCancel).not.toHaveBeenCalled();
+      expect(marked(f)).toBeDefined();
+    });
+  }
+
+  it('замовлення не знайдено в Shopify → не скасовуємо, позначаємо перевіреним', async () => {
+    const f = makeDeps({ deadRows: [cleanupRow()], orderImpl: () => Promise.resolve(null) });
+
+    await runCron(f.deps);
+
+    expect(f.shopify.orderCancel).not.toHaveBeenCalled();
+    expect(marked(f)).toBeDefined();
+  });
+
+  it('orderCancel впав → не позначено перевіреним, наступний прогін повторить', async () => {
+    const f = makeDeps({
+      deadRows: [cleanupRow()],
+      cancelImpl: () => Promise.reject(new Error('shopify down')),
+    });
+
+    await runCron(f.deps);
+
+    expect(marked(f)).toBeUndefined();
+  });
+
+  it('помилка на одному інвойсі не зупиняє решту', async () => {
+    const f = makeDeps({
+      deadRows: [
+        cleanupRow(),
+        cleanupRow({ invoice_id: 'p2_old2', order_id: 'gid://shopify/Order/3' }),
+      ],
+    });
+    f.shopify.getOrderForInvoice.mockRejectedValueOnce(new Error('shopify down'));
+
+    await runCron(f.deps);
+
+    expect(f.shopify.orderCancel).toHaveBeenCalledTimes(1);
+    expect(f.shopify.orderCancel).toHaveBeenCalledWith('gid://shopify/Order/3');
+  });
+});
+
+describe('runCron — чистка активного інвойсу: замовлення не завжди можна скасувати', () => {
+  it('mono каже created, але в замовлення є оплачений інвойс → інвойс інвалідовано, замовлення НЕ скасовано', async () => {
+    const f = makeDeps({ cleanupRows: [cleanupRow()], hasOtherLiveInvoice: true });
+
+    await runCron(f.deps);
+
+    expect(f.mono.removeInvoice).toHaveBeenCalledWith({ invoiceId: 'p2_old1' });
+    expect(f.shopify.orderCancel).not.toHaveBeenCalled();
+    const update = f.calls.find((c) => c.sql.includes('SET status = ?'));
+    expect(update?.params).toEqual(['expired', FIXED_NOW, FIXED_NOW, 'p2_old1']);
   });
 });
 
