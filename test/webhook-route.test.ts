@@ -65,10 +65,12 @@ type DbCall = { sql: string; params: unknown[] };
 
 function makeDb(options: {
   webhookLogHit?: boolean;
+  webhookLogHitAfterBatch?: boolean;
   invoiceRow?: { order_id: string; payment_type: string; status: string; amount: number } | null;
   batchImpl?: () => Promise<unknown>;
 }) {
   const calls: DbCall[] = [];
+  let webhookLogLookups = 0;
   const batch = vi.fn(options.batchImpl ?? (() => Promise.resolve([])));
 
   const db = {
@@ -83,7 +85,13 @@ function makeDb(options: {
         },
         first: vi.fn(() => {
           if (sql.includes('webhook_log')) {
-            return Promise.resolve(options.webhookLogHit ? { id: 1 } : null);
+            webhookLogLookups += 1;
+            // webhookLogHitAfterBatch: перший пошук порожній, повторний (після
+            // невдалого batch) уже бачить запис паралельного вебхука
+            const hit = options.webhookLogHitAfterBatch
+              ? webhookLogLookups > 1
+              : options.webhookLogHit;
+            return Promise.resolve(hit ? { id: 1 } : null);
           }
           return Promise.resolve(options.invoiceRow ?? null);
         }),
@@ -118,6 +126,7 @@ function makeShopify(overrides: Partial<{ orderMarkAsPaid: ReturnType<typeof vi.
 
 type Fixture = {
   app: Hono;
+  db: D1Database;
   xSign: (body: string) => Promise<string>;
   shopify: ReturnType<typeof makeShopify>;
   batch: ReturnType<typeof vi.fn>;
@@ -129,6 +138,7 @@ type Fixture = {
 async function makeFixture(
   options: {
     webhookLogHit?: boolean;
+    webhookLogHitAfterBatch?: boolean;
     /** amount за замовчуванням 42000 — як у SUCCESS_BODY. */
     invoiceRow?: {
       order_id: string;
@@ -163,6 +173,7 @@ async function makeFixture(
   const notifier = { send: vi.fn(options.notifySendImpl ?? (() => Promise.resolve())) };
   const { db, batch, calls } = makeDb({
     ...(options.webhookLogHit !== undefined ? { webhookLogHit: options.webhookLogHit } : {}),
+    ...(options.webhookLogHitAfterBatch ? { webhookLogHitAfterBatch: true } : {}),
     invoiceRow:
       options.invoiceRow === null
         ? null
@@ -190,6 +201,7 @@ async function makeFixture(
 
   return {
     app,
+    db,
     xSign: (body) => signAsMono(privateKey, body),
     shopify,
     batch,
@@ -632,6 +644,39 @@ describe('POST /mono-webhook — fail-closed', () => {
 
     expect(res.status).toBe(500);
     expect(f.batch).not.toHaveBeenCalled();
+  });
+
+  it('batch впав через унікальний індекс (паралельний дубль уже записано) → 200, без повтору', async () => {
+    const f = await makeFixture({
+      webhookLogHitAfterBatch: true,
+      batchImpl: () => Promise.reject(new Error('UNIQUE constraint failed: webhook_log')),
+    });
+
+    const res = await post(f.app, SUCCESS_BODY, await f.xSign(SUCCESS_BODY));
+
+    expect(res.status).toBe(200);
+  });
+
+  it('batch впав, і повторний пошук у журналі теж впав → 500', async () => {
+    const f = await makeFixture({
+      batchImpl: () => Promise.reject(new Error('D1 down')),
+    });
+    let lookups = 0;
+    const original = f.db.prepare.bind(f.db);
+    f.db.prepare = ((sql: string) => {
+      const statement = original(sql);
+      if (sql.includes('SELECT id FROM webhook_log')) {
+        lookups += 1;
+        if (lookups > 1) {
+          statement.first = () => Promise.reject(new Error('D1 down'));
+        }
+      }
+      return statement;
+    }) as typeof f.db.prepare;
+
+    const res = await post(f.app, SUCCESS_BODY, await f.xSign(SUCCESS_BODY));
+
+    expect(res.status).toBe(500);
   });
 
   it('batch впав після успішного mark-paid → 500', async () => {

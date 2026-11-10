@@ -214,6 +214,10 @@ CREATE TABLE webhook_log (        -- ідемпотентність + аудит
   raw_body    TEXT NOT NULL,
   received_at INTEGER NOT NULL
 );
+
+-- Міграція 0004: ідемпотентність вебхуків на рівні схеми.
+CREATE UNIQUE INDEX idx_webhook_log_invoice_status
+  ON webhook_log(invoice_id, status);
 ```
 
 ---
