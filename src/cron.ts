@@ -44,6 +44,8 @@ export async function runCron(deps: CronDeps): Promise<void> {
   const now = deps.now();
   await remindersPass(deps, now);
   await cleanupPass(deps, now);
+  // Після cleanupPass: інвойси, які той щойно побачив як expired, беруться одразу
+  await deadInvoicesPass(deps, now);
 }
 
 /**
@@ -154,6 +156,56 @@ async function remindersPass(deps: CronDeps, now: number): Promise<void> {
   }
 }
 
+/**
+ * Скасовує замовлення, якщо воно справді «привид»: нічого не оплачено і за ним
+ * не стоїть інший інвойс. Сам факт, що цей інвойс не оплачено, ще нічого не
+ * означає — покупець міг оплатити наступним інвойсом (після failure) або
+ * іншим способом, про який Worker не знає.
+ */
+async function cancelGhostOrder(deps: CronDeps, row: UnpaidInvoiceRow): Promise<void> {
+  const other = await deps.db
+    .prepare(
+      "SELECT invoice_id FROM invoices WHERE order_id = ? AND invoice_id <> ? AND (status IN ('created','processing','hold','success') OR review_outstanding IS NOT NULL) LIMIT 1",
+    )
+    .bind(row.order_id, row.invoice_id)
+    .first();
+  if (other) {
+    return;
+  }
+  const order = await deps.shopify.getOrderForInvoice(row.order_id);
+  // PENDING — єдиний стан, у якому за замовлення точно нічого не отримано
+  if (!order || order.cancelledAt !== null || order.financialStatus !== 'PENDING') {
+    return;
+  }
+  await deps.shopify.orderCancel(row.order_id);
+}
+
+/**
+ * Інвойси, що стали failure/expired без участі чистки (вебхук, звірка в
+ * нагадуваннях, або mono протермінував інвойс рівно на 24-й годині). Оплатити
+ * їх уже неможливо, тож mono не питаємо — лише вирішуємо долю замовлення.
+ */
+async function deadInvoicesPass(deps: CronDeps, now: number): Promise<void> {
+  const { results } = await deps.db
+    .prepare(
+      "SELECT invoice_id, order_id, payment_type, amount, page_url, created_at FROM invoices WHERE status IN ('failure','expired') AND cleanup_done_at IS NULL AND created_at <= ? LIMIT ?",
+    )
+    .bind(now - CLEANUP_AGE_SECONDS, BATCH_LIMIT)
+    .all<UnpaidInvoiceRow>();
+
+  for (const row of results) {
+    try {
+      await cancelGhostOrder(deps, row);
+      await deps.db
+        .prepare('UPDATE invoices SET cleanup_done_at = ? WHERE invoice_id = ?')
+        .bind(now, row.invoice_id)
+        .run();
+    } catch (err) {
+      console.error(`cron: чистка завершеного інвойсу ${row.invoice_id} не вдалась`, err);
+    }
+  }
+}
+
 async function cleanupPass(deps: CronDeps, now: number): Promise<void> {
   const { results } = await deps.db
     .prepare(
@@ -174,11 +226,13 @@ async function cleanupPass(deps: CronDeps, now: number): Promise<void> {
       await deps.mono.removeInvoice({ invoiceId: row.invoice_id });
 
       // Провал скасування → виняток → D1 не оновлюється → наступний прогін повторить
-      await deps.shopify.orderCancel(row.order_id);
+      await cancelGhostOrder(deps, row);
 
       await deps.db
-        .prepare('UPDATE invoices SET status = ?, modified_at = ? WHERE invoice_id = ?')
-        .bind('expired', now, row.invoice_id)
+        .prepare(
+          'UPDATE invoices SET status = ?, modified_at = ?, cleanup_done_at = ? WHERE invoice_id = ?',
+        )
+        .bind('expired', now, now, row.invoice_id)
         .run();
     } catch (err) {
       console.error(`cron: чистка ${row.invoice_id} не завершена`, err);
