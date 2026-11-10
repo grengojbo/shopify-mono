@@ -84,6 +84,7 @@ app.post('/mono-webhook', (c) =>
     db: c.env.bbox_payments,
     shopify: buildShopifyClient(c.env),
     pubkeys: getPubkeyProvider(c.env),
+    notifier: buildNotifier(c.env),
     now: () => Math.floor(Date.now() / 1000),
   })(c),
 );
@@ -97,7 +98,7 @@ app.post('/capture', (c) =>
   })(c),
 );
 
-/** Без телеграм-секретів (dev/тести) нагадування лише логуються. */
+/** Без телеграм-секретів (dev/тести) сповіщення лише логуються. */
 function buildNotifier(env: Env): Notifier {
   if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) {
     return createTelegramNotifier({

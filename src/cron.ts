@@ -10,6 +10,7 @@
 // Помилки ізольовані на рівні інвойса: одна відмова не зупиняє прогін.
 
 import { kopecksToUahString } from './lib/money';
+import { amountMismatchMessage, resolvePaidAmount } from './lib/mono-amount';
 import type { InvoiceStatusResponse, MonoClient } from './lib/mono-client';
 import type { ShopifyClient } from './lib/shopify-client';
 import type { Notifier } from './lib/telegram';
@@ -45,14 +46,31 @@ export async function runCron(deps: CronDeps): Promise<void> {
   await cleanupPass(deps, now);
 }
 
-/** Пропущений вебхук: mark-paid у Shopify + фіксація success у D1 (captured_at для hold). */
+/**
+ * Пропущений вебхук: mark-paid у Shopify (лише якщо списано рівно суму інвойсу)
+ * + фіксація success у D1 (captured_at для hold).
+ */
 async function markPaidBackstop(
   deps: CronDeps,
   row: UnpaidInvoiceRow,
   live: InvoiceStatusResponse,
   now: number,
 ): Promise<void> {
-  await deps.shopify.orderMarkAsPaid(row.order_id);
+  const paidAmount = resolvePaidAmount(live.finalAmount, live.amount);
+  if (paidAmount === row.amount) {
+    await deps.shopify.orderMarkAsPaid(row.order_id);
+  } else {
+    // Як і у вебхуку: розбіжність сум — рішення людини. Якщо сповіщення не
+    // пішло, виняток лишає D1 без змін і наступний прогін повторить.
+    await deps.notifier.send(
+      amountMismatchMessage({
+        orderId: row.order_id,
+        invoiceId: row.invoice_id,
+        expectedKopecks: row.amount,
+        paidKopecks: paidAmount,
+      }),
+    );
+  }
   const isCapture = row.payment_type === 'hold';
   const sql = isCapture
     ? "UPDATE invoices SET status = 'success', modified_at = ?, final_amount = ?, captured_at = ? WHERE invoice_id = ?"

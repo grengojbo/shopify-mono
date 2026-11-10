@@ -235,7 +235,7 @@ describe('runCron — чистка 24h+', () => {
   it('hold + success → UPDATE містить captured_at', async () => {
     const f = makeDeps({
       cleanupRows: [cleanupRow({ payment_type: 'hold' })],
-      invoiceStatusImpl: () => Promise.resolve(liveStatus('success')),
+      invoiceStatusImpl: () => Promise.resolve(liveStatus('success', { amount: 15000 })),
     });
 
     await runCron(f.deps);
@@ -248,13 +248,46 @@ describe('runCron — чистка 24h+', () => {
   it('hold + success із finalAmount → сума потрапляє в UPDATE', async () => {
     const f = makeDeps({
       cleanupRows: [cleanupRow({ payment_type: 'hold' })],
-      invoiceStatusImpl: () => Promise.resolve(liveStatus('success', { finalAmount: 14000 })),
+      invoiceStatusImpl: () => Promise.resolve(liveStatus('success', { finalAmount: 15000 })),
     });
 
     await runCron(f.deps);
 
     const update = f.calls.find((c) => c.sql.includes("status = 'success'"));
-    expect(update?.params).toEqual([FIXED_NOW, 14000, FIXED_NOW, 'p2_old1']);
+    expect(update?.params).toEqual([FIXED_NOW, 15000, FIXED_NOW, 'p2_old1']);
+  });
+
+  it('success, але списано не ту суму → без mark-paid, сповіщення, сума фіксується в D1', async () => {
+    const f = makeDeps({
+      cleanupRows: [cleanupRow({ payment_type: 'hold' })],
+      invoiceStatusImpl: () =>
+        Promise.resolve(liveStatus('success', { amount: 15000, finalAmount: 100 })),
+    });
+
+    await runCron(f.deps);
+
+    expect(f.shopify.orderMarkAsPaid).not.toHaveBeenCalled();
+    expect(f.shopify.orderCancel).not.toHaveBeenCalled();
+    const text = (f.notifier.send as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as string;
+    expect(text).toContain('gid://shopify/Order/2');
+    expect(text).toContain('150.00');
+    expect(text).toContain('1.00');
+    const update = f.calls.find((c) => c.sql.includes("status = 'success'"));
+    expect(update?.params).toEqual([FIXED_NOW, 100, FIXED_NOW, 'p2_old1']);
+  });
+
+  it('розбіжність суми, сповіщення не відправилось → D1 не змінено, наступний прогін повторить', async () => {
+    const f = makeDeps({
+      cleanupRows: [cleanupRow()],
+      invoiceStatusImpl: () =>
+        Promise.resolve(liveStatus('success', { amount: 15000, finalAmount: 100 })),
+      sendImpl: () => Promise.reject(new Error('telegram down')),
+    });
+
+    await runCron(f.deps);
+
+    expect(f.shopify.orderMarkAsPaid).not.toHaveBeenCalled();
+    expect(f.calls.some((c) => c.sql.startsWith('UPDATE'))).toBe(false);
   });
 
   it('mono каже created → removeInvoice + orderCancel + UPDATE expired', async () => {

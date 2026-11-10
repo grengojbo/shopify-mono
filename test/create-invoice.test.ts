@@ -384,7 +384,11 @@ describe('POST /create-invoice — fail-closed на помилках апстр�
     const db = makeDb({
       runImpl: () => Promise.reject(new Error('D1 unavailable')),
     });
-    db._first.mockResolvedValueOnce(null).mockRejectedValueOnce(new Error('D1 unavailable'));
+    // активний інвойс → null, оплата на розгляді → null, повторний пошук після INSERT → помилка
+    db._first
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error('D1 unavailable'));
     const app = makeApp({ shopify, mono, db, now: () => FIXED_NOW });
 
     const res = await postOrder(app, { orderId: 'gid://shopify/Order/1' });

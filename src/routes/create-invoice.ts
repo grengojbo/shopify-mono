@@ -39,6 +39,9 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'Authorization, Content-Type',
 } as const;
 
+const AMOUNT_MISMATCH_SQL =
+  "SELECT invoice_id FROM invoices WHERE order_id = ? AND status = 'success' AND final_amount IS NOT NULL AND final_amount <> amount LIMIT 1";
+
 export function createInvoicePreflightHandler() {
   return (c: Context) => c.body(null, 204, CORS_HEADERS);
 }
@@ -77,6 +80,14 @@ export function createInvoiceHandler(deps: CreateInvoiceDeps) {
     const existing = await findActive();
     if (existing) {
       return respondWithActive(existing);
+    }
+
+    // Вебхук або cron зафіксували списання не на суму інвойсу й передали рішення
+    // оператору. Замовлення в Shopify ще не Paid, тож без цієї перевірки покупець
+    // отримав би новий інвойс на повну суму поверх уже списаних коштів.
+    const underReview = await deps.db.prepare(AMOUNT_MISMATCH_SQL).bind(orderId).first();
+    if (underReview) {
+      return c.json({ error: 'payment under review' }, 409);
     }
 
     let order: Awaited<ReturnType<typeof deps.shopify.getOrderForInvoice>>;

@@ -65,7 +65,7 @@ type DbCall = { sql: string; params: unknown[] };
 
 function makeDb(options: {
   webhookLogHit?: boolean;
-  invoiceRow?: { order_id: string; payment_type: string; status: string } | null;
+  invoiceRow?: { order_id: string; payment_type: string; status: string; amount: number } | null;
   batchImpl?: () => Promise<unknown>;
 }) {
   const calls: DbCall[] = [];
@@ -111,14 +111,22 @@ type Fixture = {
   batch: ReturnType<typeof vi.fn>;
   calls: DbCall[];
   fetchKey: ReturnType<typeof vi.fn<() => Promise<string>>>;
+  notifier: { send: ReturnType<typeof vi.fn> };
 };
 
 async function makeFixture(
   options: {
     webhookLogHit?: boolean;
-    invoiceRow?: { order_id: string; payment_type: string; status: string } | null;
+    /** amount за замовчуванням 42000 — як у SUCCESS_BODY. */
+    invoiceRow?: {
+      order_id: string;
+      payment_type: string;
+      status: string;
+      amount?: number;
+    } | null;
     batchImpl?: () => Promise<unknown>;
     shopify?: ReturnType<typeof makeShopify>;
+    notifySendImpl?: () => Promise<void>;
     /** Ключ у провайдері не збігається з ключем підпису до refresh (ротація). */
     staleCachedKey?: boolean;
   } = {},
@@ -140,22 +148,43 @@ async function makeFixture(
 
   const pubkeys = createPubkeyProvider(fetchKey);
   const shopify = options.shopify ?? makeShopify();
+  const notifier = { send: vi.fn(options.notifySendImpl ?? (() => Promise.resolve())) };
   const { db, batch, calls } = makeDb({
     ...(options.webhookLogHit !== undefined ? { webhookLogHit: options.webhookLogHit } : {}),
     invoiceRow:
-      options.invoiceRow !== undefined
-        ? options.invoiceRow
-        : { order_id: 'gid://shopify/Order/77', payment_type: 'debit', status: 'created' },
+      options.invoiceRow === null
+        ? null
+        : {
+            order_id: 'gid://shopify/Order/77',
+            payment_type: 'debit',
+            status: 'created',
+            amount: 42000,
+            ...options.invoiceRow,
+          },
     ...(options.batchImpl ? { batchImpl: options.batchImpl } : {}),
   });
 
   const app = new Hono();
   app.post(
     '/mono-webhook',
-    monoWebhookHandler({ db, shopify, pubkeys, now: () => FIXED_NOW } as MonoWebhookDeps),
+    monoWebhookHandler({
+      db,
+      shopify,
+      pubkeys,
+      notifier,
+      now: () => FIXED_NOW,
+    } as MonoWebhookDeps),
   );
 
-  return { app, xSign: (body) => signAsMono(privateKey, body), shopify, batch, calls, fetchKey };
+  return {
+    app,
+    xSign: (body) => signAsMono(privateKey, body),
+    shopify,
+    batch,
+    calls,
+    fetchKey,
+    notifier,
+  };
 }
 
 const SUCCESS_BODY = JSON.stringify({
@@ -462,6 +491,74 @@ describe('POST /mono-webhook — статуси', () => {
 
     const insertCall = f.calls.find((c) => c.sql.includes('INSERT INTO webhook_log'));
     expect(insertCall?.params).toEqual(['p2_9ZgpZVsl3', 'success', SUCCESS_BODY, FIXED_NOW]);
+  });
+});
+
+describe('POST /mono-webhook — звірка суми', () => {
+  const body = (extra: Record<string, unknown>) =>
+    JSON.stringify({ invoiceId: 'p2_9ZgpZVsl3', status: 'success', ccy: 980, ...extra });
+
+  it('списано менше, ніж в інвойсі → без mark-paid, оператору йде сповіщення, сума фіксується', async () => {
+    const f = await makeFixture();
+    const partial = body({ amount: 42000, finalAmount: 100 });
+
+    const res = await post(f.app, partial, await f.xSign(partial));
+
+    expect(res.status).toBe(200);
+    expect(f.shopify.orderMarkAsPaid).not.toHaveBeenCalled();
+    expect(f.notifier.send).toHaveBeenCalledTimes(1);
+    const text = f.notifier.send.mock.calls[0]?.[0] as string;
+    expect(text).toContain('gid://shopify/Order/77');
+    expect(text).toContain('420.00');
+    expect(text).toContain('1.00');
+    const updateCall = f.calls.find((c) => c.sql.includes('UPDATE invoices'));
+    expect(updateCall?.params.slice(0, 3)).toEqual(['success', FIXED_NOW, 100]);
+  });
+
+  it('суми у вебхуку немає взагалі → fail-closed: без mark-paid, сповіщення «невідомо»', async () => {
+    const f = await makeFixture();
+    const noAmount = body({});
+
+    const res = await post(f.app, noAmount, await f.xSign(noAmount));
+
+    expect(res.status).toBe(200);
+    expect(f.shopify.orderMarkAsPaid).not.toHaveBeenCalled();
+    expect(f.notifier.send.mock.calls[0]?.[0]).toContain('невідомо');
+  });
+
+  it('finalAmount відсутній, amount збігається → mark-paid, без сповіщення', async () => {
+    const f = await makeFixture();
+    const amountOnly = body({ amount: 42000 });
+
+    const res = await post(f.app, amountOnly, await f.xSign(amountOnly));
+
+    expect(res.status).toBe(200);
+    expect(f.shopify.orderMarkAsPaid).toHaveBeenCalledTimes(1);
+    expect(f.notifier.send).not.toHaveBeenCalled();
+  });
+
+  it('сповіщення не відправилось → 500 без запису в D1: mono повторить, оператор таки дізнається', async () => {
+    const f = await makeFixture({
+      notifySendImpl: () => Promise.reject(new Error('telegram down')),
+    });
+    const partial = body({ amount: 42000, finalAmount: 100 });
+
+    const res = await post(f.app, partial, await f.xSign(partial));
+
+    expect(res.status).toBe(500);
+    expect(f.batch).not.toHaveBeenCalled();
+    expect(f.shopify.orderMarkAsPaid).not.toHaveBeenCalled();
+  });
+
+  it('запізнілий success із розбіжністю після reversed → лише лог, без сповіщення', async () => {
+    const f = await makeFixture({
+      invoiceRow: { order_id: 'gid://shopify/Order/77', payment_type: 'debit', status: 'reversed' },
+    });
+    const partial = body({ amount: 42000, finalAmount: 100 });
+
+    await post(f.app, partial, await f.xSign(partial));
+
+    expect(f.notifier.send).not.toHaveBeenCalled();
   });
 });
 
