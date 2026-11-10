@@ -11,6 +11,7 @@ import { makeSqliteD1 } from './helpers/sqlite-d1';
 
 const FIXED_NOW = 1_800_000_000;
 const ORDER_ID = 'gid://shopify/Order/1';
+const CONFIRMATION_NUMBER = 'XPAV284CT';
 const CAPTURE_TOKEN = 'test-capture-token-fixture'; // фікстура, не реальний секрет
 
 function makeOrder(productTags: string[]): OrderForInvoice {
@@ -19,6 +20,7 @@ function makeOrder(productTags: string[]): OrderForInvoice {
     name: '#1001',
     financialStatus: 'PENDING',
     cancelledAt: null,
+    confirmationNumber: 'XPAV284CT',
     statusPageUrl: null,
     totalOutstandingKopecks: 42000,
     currencyCode: 'UAH',
@@ -36,7 +38,7 @@ function makeOrder(productTags: string[]): OrderForInvoice {
   };
 }
 
-function makeWorld(productTags: string[] = []) {
+function makeWorld(productTags: string[] = [], enforceOrderBinding = true) {
   const { db, raw } = makeSqliteD1();
   let seq = 0;
   const mono = {
@@ -55,22 +57,35 @@ function makeWorld(productTags: string[] = []) {
   const app = new Hono();
   app.post(
     '/create-invoice',
-    createInvoiceHandler({ shopify, mono, db, verifyToken: () => Promise.resolve(true), now }),
+    createInvoiceHandler({
+      shopify,
+      mono,
+      db,
+      verifyToken: () => Promise.resolve(true),
+      enforceOrderBinding,
+      now,
+    }),
   );
   app.post('/capture', captureHandler({ db, mono, captureToken: CAPTURE_TOKEN, now }));
 
-  const post = (path: string, token: string) =>
+  const post = (path: string, token: string, extra: Record<string, unknown> = {}) =>
     app.request(`https://worker.example.com${path}`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orderId: ORDER_ID }),
+      body: JSON.stringify({ orderId: ORDER_ID, ...extra }),
     });
 
   return {
     raw,
     mono,
     order,
-    createInvoice: () => post('/create-invoice', 'session-token-fixture'),
+    /** За замовчуванням — як справжній покупець: з номером підтвердження свого замовлення. */
+    // rest-параметр, а не значення за замовчуванням: явний undefined має
+    // означати «номер не передано», а не підставляти правильний
+    createInvoice: (...override: [unknown?]) =>
+      post('/create-invoice', 'session-token-fixture', {
+        confirmationNumber: override.length > 0 ? override[0] : CONFIRMATION_NUMBER,
+      }),
     capture: () => post('/capture', CAPTURE_TOKEN),
     setStatus: (invoiceId: string, status: string) =>
       raw.prepare('UPDATE invoices SET status = ? WHERE invoice_id = ?').run(status, invoiceId),
@@ -101,6 +116,80 @@ describe('POST /create-invoice — кошти вже заблоковано (hol
 
     expect(res.status).toBe(202);
     expect(world.mono.finalizeInvoice).toHaveBeenCalledWith({ invoiceId: 'inv1', amount: 42000 });
+  });
+});
+
+describe("POST /create-invoice — прив'язка до замовлення", () => {
+  // Session token доводить лише «це покупець нашого магазину». Номер підтвердження
+  // знає тільки той, хто бачив Thank You сторінку саме цього замовлення.
+
+  it('свій номер підтвердження → інвойс створюється', async () => {
+    const world = makeWorld();
+
+    const res = await world.createInvoice();
+
+    expect(res.status).toBe(200);
+  });
+
+  const foreign: Array<[string, unknown]> = [
+    ['чужий номер', 'ZZZZ00000'],
+    ['номер не передано', undefined],
+    ['номер не рядок', 12345],
+    ['порожній номер', ''],
+  ];
+  for (const [label, value] of foreign) {
+    it(`${label} → 404 як для неіснуючого замовлення, без інвойсу`, async () => {
+      const world = makeWorld();
+
+      const res = await world.createInvoice(value);
+
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'order not found' });
+      expect(world.mono.createInvoice).not.toHaveBeenCalled();
+      expect(world.rows()).toEqual([]);
+    });
+  }
+
+  it('у замовлення в Shopify немає номера → 404 (fail-closed), навіть із порожнім номером у запиті', async () => {
+    const world = makeWorld();
+    world.order.confirmationNumber = null;
+
+    expect((await world.createInvoice('')).status).toBe(404);
+    expect((await world.createInvoice(null)).status).toBe(404);
+  });
+
+  it('чужий номер не розкриває стан замовлення: hold теж дає 404, а не 409', async () => {
+    const world = makeWorld(['made-to-order']);
+    await world.createInvoice();
+    world.setStatus('inv1', 'hold');
+
+    const res = await world.createInvoice('ZZZZ00000');
+
+    expect(res.status).toBe(404);
+  });
+
+  it('чужий номер не видає посилання на наявний інвойс', async () => {
+    const world = makeWorld();
+    await world.createInvoice();
+
+    const res = await world.createInvoice('ZZZZ00000');
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).not.toHaveProperty('pageUrl');
+  });
+
+  it('режим спостереження (enforceOrderBinding=false) → запит проходить, розбіжність пишеться в лог без самих номерів', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const world = makeWorld([], false);
+
+    const res = await world.createInvoice('ZZZZ00000');
+
+    expect(res.status).toBe(200);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const logged = JSON.stringify(warn.mock.calls[0]);
+    expect(logged).not.toContain('ZZZZ00000');
+    expect(logged).not.toContain(CONFIRMATION_NUMBER);
+    warn.mockRestore();
   });
 });
 

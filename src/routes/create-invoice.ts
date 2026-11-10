@@ -16,6 +16,11 @@ export type CreateInvoiceDeps = {
   db: D1Database;
   /** Перевірка Shopify session token від Checkout UI Extension. */
   verifyToken: (token: string) => Promise<boolean>;
+  /**
+   * true — запит без правильного номера підтвердження замовлення відхиляється.
+   * false — режим спостереження: розбіжність лише пишеться в лог.
+   */
+  enforceOrderBinding: boolean;
   /** Unix-час у секундах; ін'єктується для детермінованих тестів. */
   now: () => number;
 };
@@ -60,7 +65,9 @@ export function createInvoiceHandler(deps: CreateInvoiceDeps) {
       return c.json({ error: 'unauthorized' }, 401);
     }
 
-    const body = await c.req.json<{ orderId?: unknown }>().catch(() => null);
+    const body = await c.req
+      .json<{ orderId?: unknown; confirmationNumber?: unknown }>()
+      .catch(() => null);
     const rawOrderId = typeof body?.orderId === 'string' ? body.orderId : '';
     if (rawOrderId.length === 0) {
       return c.json({ error: 'orderId is required' }, 400);
@@ -79,11 +86,6 @@ export function createInvoiceHandler(deps: CreateInvoiceDeps) {
       return c.json({ invoiceId: active.invoice_id, pageUrl: active.page_url });
     };
 
-    const existing = await findActive();
-    if (existing?.status === 'hold') {
-      return respondWithActive(existing);
-    }
-
     let order: Awaited<ReturnType<typeof deps.shopify.getOrderForInvoice>>;
     try {
       order = await deps.shopify.getOrderForInvoice(orderId);
@@ -93,6 +95,34 @@ export function createInvoiceHandler(deps: CreateInvoiceDeps) {
     }
     if (!order) {
       return c.json({ error: 'order not found' }, 404);
+    }
+
+    // Session token доводить лише «це покупець нашого магазину», а orderId у тілі
+    // запиту може бути будь-яким. Номер підтвердження — випадковий і відомий лише
+    // тому, хто бачив Thank You сторінку саме цього замовлення. Перевірка стоїть
+    // до будь-якої відповіді про стан замовлення, і відмова не відрізняється від
+    // «замовлення не існує» — щоб перебором id не можна було нічого дізнатися.
+    const presented = body?.confirmationNumber;
+    const isOwnOrder =
+      typeof presented === 'string' &&
+      presented.length > 0 &&
+      order.confirmationNumber !== null &&
+      presented === order.confirmationNumber;
+    if (!isOwnOrder) {
+      if (deps.enforceOrderBinding) {
+        return c.json({ error: 'order not found' }, 404);
+      }
+      // Самі номери в лог не пишемо — це фактично пароль до замовлення
+      console.warn(
+        `create-invoice: номер підтвердження не збігається для ${orderId} ` +
+          `(у запиті: ${typeof presented === 'string' && presented.length > 0 ? 'є' : 'немає'}, ` +
+          `у Shopify: ${order.confirmationNumber === null ? 'немає' : 'є'}) — режим спостереження`,
+      );
+    }
+
+    const existing = await findActive();
+    if (existing?.status === 'hold') {
+      return respondWithActive(existing);
     }
     if (order.financialStatus === 'PAID') {
       return c.json({ error: 'order already paid' }, 409);

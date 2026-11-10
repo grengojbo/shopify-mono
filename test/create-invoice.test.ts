@@ -16,6 +16,7 @@ function makeOrder(overrides: Partial<OrderForInvoice> = {}): OrderForInvoice {
     name: '#1001',
     financialStatus: 'PENDING',
     cancelledAt: null,
+    confirmationNumber: 'XPAV284CT',
     statusPageUrl: 'https://bbox.myshopify.com/orders/abc/status',
     totalOutstandingKopecks: 42000,
     currencyCode: 'UAH',
@@ -70,10 +71,14 @@ function makeDb(overrides: { first?: unknown; runImpl?: () => Promise<unknown> }
 
 const VALID_TOKEN = 'valid-session-token'; // фікстура
 
-function makeApp(deps: Omit<CreateInvoiceDeps, 'verifyToken'> & Partial<CreateInvoiceDeps>) {
+function makeApp(
+  deps: Omit<CreateInvoiceDeps, 'verifyToken' | 'enforceOrderBinding'> & Partial<CreateInvoiceDeps>,
+) {
   const app = new Hono();
   const fullDeps: CreateInvoiceDeps = {
     verifyToken: (token) => Promise.resolve(token === VALID_TOKEN),
+    // Прив'язку до замовлення перевіряє create-invoice-active.test.ts
+    enforceOrderBinding: false,
     ...deps,
   };
   app.post('/create-invoice', createInvoiceHandler(fullDeps));

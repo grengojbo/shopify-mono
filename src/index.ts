@@ -22,6 +22,11 @@ export type Env = {
   SHOPIFY_APP_SECRET: string;
   /** Client ID того ж апа — звірка claim `aud` session token. */
   SHOPIFY_APP_CLIENT_ID: string;
+  /**
+   * "true" — /create-invoice вимагає номер підтвердження замовлення.
+   * Будь-що інше — режим спостереження (wrangler.toml [vars]).
+   */
+  ENFORCE_ORDER_BINDING?: string;
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_CHAT_ID?: string;
 };
@@ -73,6 +78,7 @@ app.post('/create-invoice', (c) =>
         shopDomain: c.env.SHOPIFY_STORE_DOMAIN,
         now: () => Math.floor(Date.now() / 1000),
       }),
+    enforceOrderBinding: c.env.ENFORCE_ORDER_BINDING === 'true',
     now: () => Math.floor(Date.now() / 1000),
   })(c),
 );

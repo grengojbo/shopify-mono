@@ -107,6 +107,7 @@ function makeDeps(options: {
             name: '#1001',
             financialStatus: 'PENDING',
             cancelledAt: null,
+            confirmationNumber: 'XPAV284CT',
             statusPageUrl: null,
             totalOutstandingKopecks: amountByOrder.get(orderId) ?? 0,
             currencyCode: 'UAH',
