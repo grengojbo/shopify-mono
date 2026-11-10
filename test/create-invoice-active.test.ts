@@ -104,30 +104,44 @@ describe('POST /create-invoice — кошти вже заблоковано (hol
   });
 });
 
-describe('POST /create-invoice — оплата з розбіжністю суми на розгляді оператора', () => {
-  it('списано не ту суму → 409: новий інвойс на повну суму означав би подвійну оплату', async () => {
-    const world = makeWorld();
-    await world.createInvoice();
+describe('POST /create-invoice — оплата на розгляді оператора', () => {
+  const sendToReview = (world: ReturnType<typeof makeWorld>, outstanding: number) =>
     world.raw
       .prepare(
-        "UPDATE invoices SET status = 'success', final_amount = 100 WHERE invoice_id = 'inv1'",
+        "UPDATE invoices SET status = 'success', review_outstanding = ? WHERE invoice_id = 'inv1'",
       )
-      .run();
+      .run(outstanding);
+
+  it('залишок замовлення не змінився → 409: новий інвойс означав би повторне списання', async () => {
+    const world = makeWorld();
+    await world.createInvoice();
+    sendToReview(world, 42000);
 
     const res = await world.createInvoice();
 
     expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'payment under review' });
     expect(world.mono.createInvoice).toHaveBeenCalledTimes(1);
+  });
+
+  it('оператор зафіксував часткову оплату в Shopify → новий інвойс на залишок', async () => {
+    const world = makeWorld();
+    await world.createInvoice();
+    sendToReview(world, 42000);
+    world.order.totalOutstandingKopecks = 41900;
+
+    const res = await world.createInvoice();
+
+    expect(res.status).toBe(200);
+    expect(world.mono.createInvoice).toHaveBeenLastCalledWith(
+      expect.objectContaining({ amount: 41900 }),
+    );
   });
 
   it('звичайна успішна оплата не блокує новий інвойс (доплата після редагування замовлення)', async () => {
     const world = makeWorld();
     await world.createInvoice();
-    world.raw
-      .prepare(
-        "UPDATE invoices SET status = 'success', final_amount = 42000 WHERE invoice_id = 'inv1'",
-      )
-      .run();
+    world.setStatus('inv1', 'success');
 
     const res = await world.createInvoice();
 
@@ -220,6 +234,33 @@ describe('POST /create-invoice — наявний інвойс і поточни
 
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'order cancelled' });
+    // Пряме посилання на сторінку mono теж має перестати працювати
+    expect(world.mono.removeInvoice).toHaveBeenCalledWith({ invoiceId: 'inv1' });
+    expect(world.rows()).toEqual([{ invoice_id: 'inv1', status: 'expired' }]);
+  });
+
+  it('скасовано, але mono відмовив в інвалідації → усе одно 409, інвойс лишається як був', async () => {
+    const world = makeWorld();
+    await world.createInvoice();
+    world.order.cancelledAt = '2027-01-15T10:00:00Z';
+    world.mono.removeInvoice.mockRejectedValueOnce(new Error('mono down'));
+
+    const res = await world.createInvoice();
+
+    expect(res.status).toBe(409);
+    expect(world.rows()).toEqual([{ invoice_id: 'inv1', status: 'created' }]);
+  });
+
+  it('скасовано, а інвойс уже оплачують (processing) → 409 без інвалідації', async () => {
+    const world = makeWorld();
+    await world.createInvoice();
+    world.setStatus('inv1', 'processing');
+    world.order.cancelledAt = '2027-01-15T10:00:00Z';
+
+    const res = await world.createInvoice();
+
+    expect(res.status).toBe(409);
+    expect(world.mono.removeInvoice).not.toHaveBeenCalled();
   });
 
   it('скасоване замовлення без інвойсу → 409, інвойс не створюється', async () => {

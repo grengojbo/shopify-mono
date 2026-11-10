@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { type CronDeps, runCron } from '../src/cron';
 import type { InvoiceStatusResponse } from '../src/lib/mono-client';
+import type { OrderForInvoice } from '../src/lib/shopify-client';
 
 const FIXED_NOW = 1_800_000_000;
 
@@ -80,6 +81,7 @@ function makeDeps(options: {
   removeImpl?: () => Promise<void>;
   cancelImpl?: () => Promise<void>;
   sendImpl?: () => Promise<void>;
+  orderImpl?: (orderId: string) => Promise<OrderForInvoice | null>;
 }) {
   const { db, calls } = makeDb(options);
   const mono = {
@@ -88,7 +90,30 @@ function makeDeps(options: {
     ),
     removeInvoice: vi.fn(options.removeImpl ?? (() => Promise.resolve())),
   };
+  // Залишок замовлення в Shopify дорівнює сумі його інвойсу з вибірки —
+  // якщо тест не задає іншого через orderImpl
+  const amountByOrder = new Map(
+    [...(options.reminderRows ?? []), ...(options.cleanupRows ?? [])].map((row) => [
+      row.order_id,
+      row.amount,
+    ]),
+  );
   const shopify = {
+    getOrderForInvoice: vi.fn(
+      options.orderImpl ??
+        ((orderId: string) =>
+          Promise.resolve({
+            id: orderId,
+            name: '#1001',
+            financialStatus: 'PENDING',
+            cancelledAt: null,
+            statusPageUrl: null,
+            totalOutstandingKopecks: amountByOrder.get(orderId) ?? 0,
+            currencyCode: 'UAH',
+            paymentGatewayNames: ['monobank'],
+            lineItems: [],
+          })),
+    ),
     orderMarkAsPaid: vi.fn().mockResolvedValue(undefined),
     orderCancel: vi.fn(options.cancelImpl ?? (() => Promise.resolve())),
   };
@@ -274,6 +299,23 @@ describe('runCron — чистка 24h+', () => {
     expect(text).toContain('1.00');
     const update = f.calls.find((c) => c.sql.includes("status = 'success'"));
     expect(update?.params).toEqual([FIXED_NOW, 100, FIXED_NOW, 'p2_old1']);
+    const review = f.calls.find((c) => c.sql.includes('review_outstanding'));
+    expect(review?.params).toEqual([15000, 'p2_old1']);
+  });
+
+  it('success, але замовлення не знайдено в Shopify → без mark-paid, сповіщення оператору', async () => {
+    const f = makeDeps({
+      cleanupRows: [cleanupRow()],
+      invoiceStatusImpl: () => Promise.resolve(liveStatus('success', { amount: 15000 })),
+      orderImpl: () => Promise.resolve(null),
+    });
+
+    await runCron(f.deps);
+
+    expect(f.shopify.orderMarkAsPaid).not.toHaveBeenCalled();
+    expect(f.notifier.send).toHaveBeenCalledTimes(1);
+    const review = f.calls.find((c) => c.sql.includes('review_outstanding'));
+    expect(review?.params).toEqual([15000, 'p2_old1']);
   });
 
   it('розбіжність суми, сповіщення не відправилось → D1 не змінено, наступний прогін повторить', async () => {

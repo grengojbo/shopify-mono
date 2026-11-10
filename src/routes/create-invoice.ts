@@ -40,8 +40,9 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'Authorization, Content-Type',
 } as const;
 
-const AMOUNT_MISMATCH_SQL =
-  "SELECT invoice_id FROM invoices WHERE order_id = ? AND status = 'success' AND final_amount IS NOT NULL AND final_amount <> amount LIMIT 1";
+// Найбільший залишок, зафіксований під час передачі оплати оператору (міграція 0003)
+const REVIEW_SQL =
+  'SELECT MAX(review_outstanding) AS outstanding FROM invoices WHERE order_id = ? AND review_outstanding IS NOT NULL';
 
 export function createInvoicePreflightHandler() {
   return (c: Context) => c.body(null, 204, CORS_HEADERS);
@@ -83,14 +84,6 @@ export function createInvoiceHandler(deps: CreateInvoiceDeps) {
       return respondWithActive(existing);
     }
 
-    // Вебхук або cron зафіксували списання не на суму інвойсу й передали рішення
-    // оператору. Замовлення в Shopify ще не Paid, тож без цієї перевірки покупець
-    // отримав би новий інвойс на повну суму поверх уже списаних коштів.
-    const underReview = await deps.db.prepare(AMOUNT_MISMATCH_SQL).bind(orderId).first();
-    if (underReview) {
-      return c.json({ error: 'payment under review' }, 409);
-    }
-
     let order: Awaited<ReturnType<typeof deps.shopify.getOrderForInvoice>>;
     try {
       order = await deps.shopify.getOrderForInvoice(orderId);
@@ -105,7 +98,22 @@ export function createInvoiceHandler(deps: CreateInvoiceDeps) {
       return c.json({ error: 'order already paid' }, 409);
     }
     if (order.cancelledAt !== null) {
-      // Оплата скасованого замовлення — це списання, яке доведеться повертати
+      // Оплата скасованого замовлення — це списання, яке доведеться повертати.
+      // Ще не розпочатий інвойс прибираємо і в mono: хтось міг зберегти пряме
+      // посилання на сторінку оплати. Best-effort — відповідь однаково 409.
+      if (existing?.status === 'created') {
+        try {
+          await deps.mono.removeInvoice({ invoiceId: existing.invoice_id });
+          await deps.db
+            .prepare(
+              "UPDATE invoices SET status = 'expired', modified_at = ? WHERE invoice_id = ? AND status = 'created'",
+            )
+            .bind(deps.now(), existing.invoice_id)
+            .run();
+        } catch (err) {
+          console.error('інвойс скасованого замовлення не інвалідовано', err);
+        }
+      }
       return c.json({ error: 'order cancelled' }, 409);
     }
     // Кнопка оплати — лише для замовлень з ручним методом «monobank»;
@@ -122,6 +130,20 @@ export function createInvoiceHandler(deps: CreateInvoiceDeps) {
     }
     if (order.totalOutstandingKopecks <= 0) {
       return c.json({ error: 'nothing to pay' }, 422);
+    }
+
+    // Гроші за це замовлення вже списано, але Worker не зміг зафіксувати оплату
+    // сам і передав рішення оператору. Поки залишок у Shopify не зменшився,
+    // новий інвойс означав би повторне списання поверх уже отриманих коштів.
+    const review = await deps.db
+      .prepare(REVIEW_SQL)
+      .bind(orderId)
+      .first<{ outstanding: number | null }>();
+    if (
+      typeof review?.outstanding === 'number' &&
+      order.totalOutstandingKopecks >= review.outstanding
+    ) {
+      return c.json({ error: 'payment under review' }, 409);
     }
 
     if (existing) {

@@ -10,7 +10,7 @@
 // Помилки ізольовані на рівні інвойса: одна відмова не зупиняє прогін.
 
 import { kopecksToUahString } from './lib/money';
-import { amountMismatchMessage, resolvePaidAmount } from './lib/mono-amount';
+import { resolvePaidAmount, settlePayment } from './lib/mono-amount';
 import type { InvoiceStatusResponse, MonoClient } from './lib/mono-client';
 import type { ShopifyClient } from './lib/shopify-client';
 import type { Notifier } from './lib/telegram';
@@ -25,7 +25,7 @@ const TERMINAL_STATUSES = new Set(['success', 'failure', 'reversed', 'expired'])
 export type CronDeps = {
   db: D1Database;
   mono: Pick<MonoClient, 'invoiceStatus' | 'removeInvoice'>;
-  shopify: Pick<ShopifyClient, 'orderMarkAsPaid' | 'orderCancel'>;
+  shopify: Pick<ShopifyClient, 'getOrderForInvoice' | 'orderMarkAsPaid' | 'orderCancel'>;
   notifier: Notifier;
   /** Unix-час у секундах; ін'єктується для детермінованих тестів. */
   now: () => number;
@@ -47,7 +47,7 @@ export async function runCron(deps: CronDeps): Promise<void> {
 }
 
 /**
- * Пропущений вебхук: mark-paid у Shopify (лише якщо списано рівно суму інвойсу)
+ * Пропущений вебхук: mark-paid у Shopify (лише якщо суми сходяться — settlePayment)
  * + фіксація success у D1 (captured_at для hold).
  */
 async function markPaidBackstop(
@@ -56,20 +56,17 @@ async function markPaidBackstop(
   live: InvoiceStatusResponse,
   now: number,
 ): Promise<void> {
-  const paidAmount = resolvePaidAmount(live.finalAmount, live.amount);
-  if (paidAmount === row.amount) {
-    await deps.shopify.orderMarkAsPaid(row.order_id);
-  } else {
-    // Як і у вебхуку: розбіжність сум — рішення людини. Якщо сповіщення не
-    // пішло, виняток лишає D1 без змін і наступний прогін повторить.
-    await deps.notifier.send(
-      amountMismatchMessage({
-        orderId: row.order_id,
-        invoiceId: row.invoice_id,
-        expectedKopecks: row.amount,
-        paidKopecks: paidAmount,
-      }),
-    );
+  // Виняток (Shopify, сповіщення) лишає D1 без змін — наступний прогін повторить
+  const reviewOutstanding = await settlePayment(
+    deps,
+    { invoiceId: row.invoice_id, orderId: row.order_id, amount: row.amount },
+    resolvePaidAmount(live.finalAmount, live.amount),
+  );
+  if (reviewOutstanding !== null) {
+    await deps.db
+      .prepare('UPDATE invoices SET review_outstanding = ? WHERE invoice_id = ?')
+      .bind(reviewOutstanding, row.invoice_id)
+      .run();
   }
   const isCapture = row.payment_type === 'hold';
   const sql = isCapture

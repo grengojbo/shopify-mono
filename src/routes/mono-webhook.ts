@@ -2,7 +2,8 @@
 //
 // Порядок критичний і навмисний:
 //   сирі байти → підпис (fail-closed) → парсинг → ідемпотентність →
-//   інвойс із D1 → Shopify mark-paid → атомарний batch у D1 → 200.
+//   інвойс із D1 → звірка з живим замовленням і Shopify mark-paid →
+//   атомарний batch у D1 → 200.
 // Shopify ПЕРЕД записом webhook_log: якщо запис у D1 упаде, mono отримає
 // не-200 і ретраїтиме; повторний mark-paid на вже оплаченому замовленні
 // трактується клієнтом як успіх — цикл збігається без подвійних оплат.
@@ -11,14 +12,14 @@
 import type { Context } from 'hono';
 
 import { verifyWebhookSignature } from '../lib/ecdsa-verify';
-import { amountMismatchMessage, resolvePaidAmount } from '../lib/mono-amount';
+import { resolvePaidAmount, settlePayment } from '../lib/mono-amount';
 import type { PubkeyProvider } from '../lib/mono-pubkey';
 import type { ShopifyClient } from '../lib/shopify-client';
 import type { Notifier } from '../lib/telegram';
 
 export type MonoWebhookDeps = {
   db: D1Database;
-  shopify: Pick<ShopifyClient, 'orderMarkAsPaid'>;
+  shopify: Pick<ShopifyClient, 'getOrderForInvoice' | 'orderMarkAsPaid'>;
   pubkeys: PubkeyProvider;
   /** Канал оператора — для випадків, які Worker не має права вирішувати сам. */
   notifier: Notifier;
@@ -133,36 +134,19 @@ export function monoWebhookHandler(deps: MonoWebhookDeps) {
 
     const isStale = isStaleTransition(invoice.status, status);
 
+    // null — оплату зафіксовано (або фіксувати нічого); число — передано оператору
+    let reviewOutstanding: number | null = null;
     if (status === 'success' && !isStale) {
-      const paidAmount = resolvePaidAmount(payload.finalAmount, payload.amount);
-      if (paidAmount === invoice.amount) {
-        try {
-          // order_id — з D1, не з тіла вебхука: авторитет — наша база
-          await deps.shopify.orderMarkAsPaid(invoice.order_id);
-        } catch (err) {
-          console.error('mono webhook: orderMarkAsPaid впав — вебхук не підтверджуємо', err);
-          return c.json({ error: 'shopify error' }, 500);
-        }
-      } else {
-        // mark-paid позначив би оплаченим увесь залишок — при розбіжності сум
-        // це рішення людини. Сповіщення раніше за запис у D1: якщо воно не
-        // пішло, mono повторить вебхук і оператор таки дізнається.
-        console.error(
-          `mono webhook: сума ${paidAmount} не збігається з інвойсом ${invoiceId} (${invoice.amount})`,
+      try {
+        // order_id і сума — з D1, не з тіла вебхука: авторитет — наша база
+        reviewOutstanding = await settlePayment(
+          deps,
+          { invoiceId, orderId: invoice.order_id, amount: invoice.amount },
+          resolvePaidAmount(payload.finalAmount, payload.amount),
         );
-        try {
-          await deps.notifier.send(
-            amountMismatchMessage({
-              orderId: invoice.order_id,
-              invoiceId,
-              expectedKopecks: invoice.amount,
-              paidKopecks: paidAmount,
-            }),
-          );
-        } catch (err) {
-          console.error('mono webhook: сповіщення про розбіжність суми не відправлено', err);
-          return c.json({ error: 'notification error' }, 500);
-        }
+      } catch (err) {
+        console.error('mono webhook: оплату не зафіксовано — вебхук не підтверджуємо', err);
+        return c.json({ error: 'settlement error' }, 500);
       }
     }
 
@@ -193,6 +177,14 @@ export function monoWebhookHandler(deps: MonoWebhookDeps) {
         ? [...baseParams, receivedAt, invoiceId]
         : [...baseParams, invoiceId];
       statements.push(deps.db.prepare(updateSql).bind(...params));
+    }
+
+    if (reviewOutstanding !== null) {
+      statements.push(
+        deps.db
+          .prepare('UPDATE invoices SET review_outstanding = ? WHERE invoice_id = ?')
+          .bind(reviewOutstanding, invoiceId),
+      );
     }
 
     try {
