@@ -300,6 +300,8 @@ crons = ["*/15 * * * *"]
 Несекретні змінні (`wrangler.toml [vars]`):
 - `ENFORCE_ORDER_BINDING` — `"true"`: `/create-invoice` відхиляє запит без правильного номера підтвердження замовлення (§12). Будь-яке інше значення — режим спостереження: розбіжність лише пишеться в лог. Запускається з `"false"`, перемикається на `"true"` після перевірки на реальному замовленні.
 
+- `PUBLIC_BASE_URL` — публічна https-адреса Worker'а (`https://pay.bbox.kiev.ua`). З неї будується `webHookUrl`, який отримує mono; origin вхідного запиту для цього не використовується. Не задано або не https → `/create-invoice` відповідає 500 і інвойс не створює.
+
 Секрети (через `wrangler secret put`):
 - `MONO_TOKEN`
 - `SHOPIFY_ADMIN_CLIENT_ID` + `SHOPIFY_ADMIN_CLIENT_SECRET` — креденшали custom app (Dev Dashboard) для Admin API: вічних `shpat_`-токенів для нових апів з 2026-01 немає, Worker отримує 24-годинний токен через client credentials grant і кешує його

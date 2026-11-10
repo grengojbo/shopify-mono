@@ -375,6 +375,7 @@ custom_domain = true
 
 - `worker_url` у налаштуваннях Checkout UI розширення (Shopify admin → Checkout → редактор → блок «Оплата monobank»),
 - webhook URL у кабінеті monobank (`.../mono-webhook`), якщо він уже був там прописаний на старий `workers.dev`-домен.
+- `PUBLIC_BASE_URL` у `[vars]` файлу [wrangler.toml](wrangler.toml) — з нього Worker будує адресу вебхука для кожного нового інвойсу.
 
 ---
 
