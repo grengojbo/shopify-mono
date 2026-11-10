@@ -4,7 +4,8 @@
 //
 // Перед будь-якою дією — жива звірка статусу з mono (invoiceStatus): вона ж
 // є backstop'ом для пропущених вебхуків (рейс «вебхук раніше за INSERT»,
-// вичерпані ретраї mono) — реально оплачене замовлення ніколи не скасовується.
+// вичерпані ретраї mono). Замовлення скасовується лише якщо mono підтвердив,
+// що оплату навіть не починали, і інвойс вдалося інвалідувати.
 //
 // Помилки ізольовані на рівні інвойса: одна відмова не зупиняє прогін.
 
@@ -66,25 +67,34 @@ async function markPaidBackstop(
 }
 
 /**
- * Жива звірка з mono. Повертає true, якщо інвойс уже в термінальному стані
- * (дії виконано або статус зафіксовано) і подальша обробка не потрібна.
+ * Жива звірка з mono. Повертає true лише тоді, коли інвойс справді ще не
+ * оплачують (`created`) — тільки тоді доречні нагадування і чистка.
+ *
+ * Усе інше означає «не чіпати»: термінальний статус фіксується в D1,
+ * `hold` — це вже заблоковані кошти (пропущений вебхук), `processing` —
+ * оплата триває просто зараз. Невідомий статус теж трактується як «гроші
+ * можуть бути в русі»: краще зайве замовлення-привид, ніж скасоване оплачене.
  */
-async function reconcileWithMono(
-  deps: CronDeps,
-  row: UnpaidInvoiceRow,
-  now: number,
-): Promise<boolean> {
+async function isStillUnpaid(deps: CronDeps, row: UnpaidInvoiceRow, now: number): Promise<boolean> {
   const live = await deps.mono.invoiceStatus(row.invoice_id);
-  if (live.status === 'success') {
-    await markPaidBackstop(deps, row, live, now);
+  if (live.status === 'created') {
     return true;
   }
-  if (TERMINAL_STATUSES.has(live.status)) {
+  if (live.status === 'success') {
+    await markPaidBackstop(deps, row, live, now);
+  } else if (live.status === 'hold') {
+    // Умова на статус — щоб не перезаписати success, який міг щойно поставити вебхук
+    await deps.db
+      .prepare(
+        "UPDATE invoices SET status = 'hold', modified_at = ? WHERE invoice_id = ? AND status IN ('created','processing')",
+      )
+      .bind(now, row.invoice_id)
+      .run();
+  } else if (TERMINAL_STATUSES.has(live.status)) {
     await deps.db
       .prepare('UPDATE invoices SET status = ?, modified_at = ? WHERE invoice_id = ?')
       .bind(live.status, now, row.invoice_id)
       .run();
-    return true;
   }
   return false;
 }
@@ -99,7 +109,7 @@ async function remindersPass(deps: CronDeps, now: number): Promise<void> {
 
   for (const row of results) {
     try {
-      if (await reconcileWithMono(deps, row, now)) {
+      if (!(await isStillUnpaid(deps, row, now))) {
         continue;
       }
 
@@ -139,16 +149,14 @@ async function cleanupPass(deps: CronDeps, now: number): Promise<void> {
 
   for (const row of results) {
     try {
-      if (await reconcileWithMono(deps, row, now)) {
+      if (!(await isStillUnpaid(deps, row, now))) {
         continue;
       }
 
-      // Інвалідація інвойсу — best-effort: він міг уже протермінуватись у mono
-      try {
-        await deps.mono.removeInvoice({ invoiceId: row.invoice_id });
-      } catch (err) {
-        console.error(`cron: removeInvoice для ${row.invoice_id} не вдався (ігноруємо)`, err);
-      }
+      // Інвалідація обов'язкова: якщо інвойс не вдалося прибрати, його ще можна
+      // оплатити — скасування замовлення дало б списання за скасоване.
+      // Виняток → нічого не змінено → наступний прогін повторить зі свіжою звіркою.
+      await deps.mono.removeInvoice({ invoiceId: row.invoice_id });
 
       // Провал скасування → виняток → D1 не оновлюється → наступний прогін повторить
       await deps.shopify.orderCancel(row.order_id);

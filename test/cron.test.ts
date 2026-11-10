@@ -142,6 +142,33 @@ describe('runCron — нагадування', () => {
     expect(update?.params[0]).toBe('expired');
   });
 
+  it('звірка: mono каже processing (оплата триває) → без нагадування і без змін у D1', async () => {
+    const f = makeDeps({
+      reminderRows: [reminderRow()],
+      invoiceStatusImpl: () => Promise.resolve(liveStatus('processing')),
+    });
+
+    await runCron(f.deps);
+
+    expect(f.notifier.send).not.toHaveBeenCalled();
+    expect(f.calls.some((c) => c.sql.startsWith('UPDATE'))).toBe(false);
+  });
+
+  it('звірка: mono каже hold (пропущений вебхук) → D1 отримує hold, нагадування немає', async () => {
+    const f = makeDeps({
+      reminderRows: [reminderRow({ payment_type: 'hold' })],
+      invoiceStatusImpl: () => Promise.resolve(liveStatus('hold')),
+    });
+
+    await runCron(f.deps);
+
+    expect(f.notifier.send).not.toHaveBeenCalled();
+    expect(f.shopify.orderMarkAsPaid).not.toHaveBeenCalled();
+    const update = f.calls.find((c) => c.sql.includes("SET status = 'hold'"));
+    expect(update?.sql).toContain("status IN ('created','processing')");
+    expect(update?.params).toEqual([FIXED_NOW, 'p2_rem1']);
+  });
+
   it('page_url відсутній → у тексті «недоступне»', async () => {
     const f = makeDeps({ reminderRows: [reminderRow({ page_url: null })] });
 
@@ -253,17 +280,56 @@ describe('runCron — чистка 24h+', () => {
     expect(update).toBeUndefined();
   });
 
-  it('removeInvoice впав → cancel і UPDATE все одно виконуються', async () => {
+  it('removeInvoice впав → інвойс ще може бути оплачений, тож замовлення НЕ скасовується', async () => {
     const f = makeDeps({
       cleanupRows: [cleanupRow()],
-      removeImpl: () => Promise.reject(new Error('already expired')),
+      removeImpl: () => Promise.reject(new Error('invoice in processing')),
     });
 
     await runCron(f.deps);
 
-    expect(f.shopify.orderCancel).toHaveBeenCalledTimes(1);
-    const update = f.calls.find((c) => c.sql.includes('SET status = ?'));
-    expect(update?.params[0]).toBe('expired');
+    expect(f.shopify.orderCancel).not.toHaveBeenCalled();
+    expect(f.calls.some((c) => c.sql.startsWith('UPDATE'))).toBe(false);
+  });
+
+  it('mono каже processing (оплата триває) → нічого не інвалідуємо й не скасовуємо', async () => {
+    const f = makeDeps({
+      cleanupRows: [cleanupRow()],
+      invoiceStatusImpl: () => Promise.resolve(liveStatus('processing')),
+    });
+
+    await runCron(f.deps);
+
+    expect(f.mono.removeInvoice).not.toHaveBeenCalled();
+    expect(f.shopify.orderCancel).not.toHaveBeenCalled();
+    expect(f.calls.some((c) => c.sql.startsWith('UPDATE'))).toBe(false);
+  });
+
+  it('mono каже hold (кошти заблоковано) → D1 отримує hold, замовлення НЕ скасовується', async () => {
+    const f = makeDeps({
+      cleanupRows: [cleanupRow({ payment_type: 'hold' })],
+      invoiceStatusImpl: () => Promise.resolve(liveStatus('hold')),
+    });
+
+    await runCron(f.deps);
+
+    expect(f.mono.removeInvoice).not.toHaveBeenCalled();
+    expect(f.shopify.orderCancel).not.toHaveBeenCalled();
+    const update = f.calls.find((c) => c.sql.includes("SET status = 'hold'"));
+    expect(update?.params).toEqual([FIXED_NOW, 'p2_old1']);
+  });
+
+  it('невідомий статус від mono → fail-closed: без скасування і без змін у D1', async () => {
+    const f = makeDeps({
+      cleanupRows: [cleanupRow()],
+      invoiceStatusImpl: () => Promise.resolve(liveStatus('some-future-status')),
+    });
+
+    await runCron(f.deps);
+
+    expect(f.mono.removeInvoice).not.toHaveBeenCalled();
+    expect(f.shopify.orderCancel).not.toHaveBeenCalled();
+    expect(f.calls.some((c) => c.sql.startsWith('UPDATE'))).toBe(false);
   });
 
   it('помилка на одному інвойсі не зупиняє решту', async () => {
