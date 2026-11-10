@@ -375,6 +375,24 @@ describe('POST /create-invoice — fail-closed на помилках апстр�
     expect(mono.removeInvoice).toHaveBeenCalledWith({ invoiceId: 'p2_new' });
   });
 
+  it('D1 INSERT впав і повторний пошук активного інвойсу теж впав → 500', async () => {
+    const shopify = {
+      getOrderForInvoice: vi.fn().mockResolvedValue(makeOrder()),
+      orderMarkAsPaid: vi.fn(),
+    };
+    const mono = makeMonoClient();
+    const db = makeDb({
+      runImpl: () => Promise.reject(new Error('D1 unavailable')),
+    });
+    db._first.mockResolvedValueOnce(null).mockRejectedValueOnce(new Error('D1 unavailable'));
+    const app = makeApp({ shopify, mono, db, now: () => FIXED_NOW });
+
+    const res = await postOrder(app, { orderId: 'gid://shopify/Order/1' });
+
+    expect(res.status).toBe(500);
+    expect(mono.removeInvoice).toHaveBeenCalledWith({ invoiceId: 'p2_new' });
+  });
+
   it('D1 INSERT впав і removeInvoice теж впав → все одно 500, без падіння процесу', async () => {
     const shopify = {
       getOrderForInvoice: vi.fn().mockResolvedValue(makeOrder()),
