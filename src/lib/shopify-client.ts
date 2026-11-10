@@ -17,6 +17,7 @@ const ORDER_FOR_INVOICE_QUERY = `
       id
       name
       displayFinancialStatus
+      cancelledAt
       statusPageUrl
       paymentGatewayNames
       totalOutstandingSet {
@@ -53,6 +54,8 @@ export type OrderForInvoice = {
   id: string;
   name: string;
   financialStatus: string;
+  /** ISO-час скасування; null — замовлення не скасоване. */
+  cancelledAt: string | null;
   statusPageUrl: string | null;
   /** Назви методів оплати замовлення; для ручних методів — їхня назва з налаштувань. */
   paymentGatewayNames: string[];
@@ -84,6 +87,7 @@ type GraphqlOrderNode = {
   id: string;
   name: string;
   displayFinancialStatus: string;
+  cancelledAt: string | null;
   statusPageUrl: string | null;
   paymentGatewayNames: string[];
   totalOutstandingSet: { shopMoney: { amount: string; currencyCode: string } };
@@ -220,6 +224,7 @@ export function createShopifyClient(options: ShopifyClientOptions): ShopifyClien
         id: order.id,
         name: order.name,
         financialStatus: order.displayFinancialStatus,
+        cancelledAt: order.cancelledAt,
         statusPageUrl: order.statusPageUrl,
         paymentGatewayNames: order.paymentGatewayNames,
         totalOutstandingKopecks: uahToKopecks(order.totalOutstandingSet.shopMoney.amount),
