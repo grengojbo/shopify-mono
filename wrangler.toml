@@ -24,6 +24,17 @@ database_name = "bbox-payments"
 # Плейсхолдер: замінити реальним id після `wrangler d1 create bbox-payments`.
 database_id = "a38e0591-55b2-4732-a6da-8c47a9377a8f"
 
+# Обмеження частоти для /create-invoice: не більше 30 запитів за хвилину з однієї
+# IP-адреси. Ліміт приблизний і окремий для кожної локації Cloudflare.
+# period у create-invoice.ts (Retry-After) має збігатися з цим значенням.
+[[ratelimits]]
+name = "CREATE_INVOICE_LIMITER"
+namespace_id = "1001"
+
+  [ratelimits.simple]
+  limit = 30
+  period = 60
+
 [triggers]
 crons = ["*/15 * * * *"]
 

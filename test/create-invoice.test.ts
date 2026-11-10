@@ -73,12 +73,16 @@ const VALID_TOKEN = 'valid-session-token'; // фікстура
 const WEBHOOK_URL = 'https://pay.example.com/mono-webhook';
 
 function makeApp(
-  deps: Omit<CreateInvoiceDeps, 'verifyToken' | 'enforceOrderBinding' | 'webHookUrl'> &
+  deps: Omit<
+    CreateInvoiceDeps,
+    'verifyToken' | 'allowRequest' | 'enforceOrderBinding' | 'webHookUrl'
+  > &
     Partial<CreateInvoiceDeps>,
 ) {
   const app = new Hono();
   const fullDeps: CreateInvoiceDeps = {
     verifyToken: (token) => Promise.resolve(token === VALID_TOKEN),
+    allowRequest: () => Promise.resolve(true),
     // Прив'язку до замовлення перевіряє create-invoice-active.test.ts
     enforceOrderBinding: false,
     webHookUrl: WEBHOOK_URL,
@@ -486,6 +490,51 @@ describe('POST /create-invoice — авторизація session token', () => 
     expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
     expect(res.headers.get('Access-Control-Allow-Methods')).toContain('POST');
     expect(res.headers.get('Access-Control-Allow-Headers')).toContain('Authorization');
+  });
+});
+
+describe('POST /create-invoice — обмеження частоти', () => {
+  it('ліміт вичерпано → 429 з Retry-After, жодних звернень до Shopify, mono чи D1', async () => {
+    const shopify = { getOrderForInvoice: vi.fn(), orderMarkAsPaid: vi.fn() };
+    const mono = makeMonoClient();
+    const db = makeDb();
+    const allowRequest = vi.fn().mockResolvedValue(false);
+    const app = makeApp({ shopify, mono, db, now: () => FIXED_NOW, allowRequest });
+
+    const res = await app.request('https://worker.example.com/create-invoice', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${VALID_TOKEN}`,
+        'Content-Type': 'application/json',
+        'CF-Connecting-IP': '203.0.113.7',
+      },
+      body: JSON.stringify({ orderId: 'gid://shopify/Order/1' }),
+    });
+
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('60');
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(allowRequest).toHaveBeenCalledWith('203.0.113.7');
+    expect(shopify.getOrderForInvoice).not.toHaveBeenCalled();
+    expect(mono.createInvoice).not.toHaveBeenCalled();
+    expect(db.prepare).not.toHaveBeenCalled();
+  });
+
+  it('запит без валідного токена не витрачає ліміт', async () => {
+    const shopify = { getOrderForInvoice: vi.fn(), orderMarkAsPaid: vi.fn() };
+    const allowRequest = vi.fn().mockResolvedValue(true);
+    const app = makeApp({
+      shopify,
+      mono: makeMonoClient(),
+      db: makeDb(),
+      now: () => FIXED_NOW,
+      allowRequest,
+    });
+
+    const res = await postOrder(app, { orderId: 'gid://shopify/Order/1' }, undefined, 'Bearer x');
+
+    expect(res.status).toBe(401);
+    expect(allowRequest).not.toHaveBeenCalled();
   });
 });
 

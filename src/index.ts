@@ -3,6 +3,7 @@ import { runCron } from './cron';
 import { createMonoClient } from './lib/mono-client';
 import { createPubkeyProvider, type PubkeyProvider } from './lib/mono-pubkey';
 import { resolveWebHookUrl } from './lib/public-url';
+import { checkRateLimit } from './lib/rate-limit';
 import { verifySessionToken } from './lib/session-token';
 import { type AdminTokenProvider, createAdminTokenProvider } from './lib/shopify-admin-token';
 import { createShopifyClient, type ShopifyClient } from './lib/shopify-client';
@@ -13,6 +14,8 @@ import { monoWebhookHandler } from './routes/mono-webhook';
 
 export type Env = {
   bbox_payments: D1Database;
+  /** Rate Limiting binding для /create-invoice (wrangler.toml [[ratelimits]]). */
+  CREATE_INVOICE_LIMITER?: RateLimit;
   MONO_TOKEN: string;
   SHOPIFY_STORE_DOMAIN: string;
   CAPTURE_TOKEN: string;
@@ -76,6 +79,7 @@ app.post('/create-invoice', (c) =>
     shopify: buildShopifyClient(c.env),
     mono: createMonoClient({ token: c.env.MONO_TOKEN }),
     db: c.env.bbox_payments,
+    allowRequest: (key) => checkRateLimit(c.env.CREATE_INVOICE_LIMITER, key),
     verifyToken: (token) =>
       verifySessionToken({
         token,

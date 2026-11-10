@@ -16,6 +16,8 @@ export type CreateInvoiceDeps = {
   db: D1Database;
   /** Перевірка Shopify session token від Checkout UI Extension. */
   verifyToken: (token: string) => Promise<boolean>;
+  /** Обмеження частоти: false — для цього ключа (IP покупця) ліміт вичерпано. */
+  allowRequest: (key: string) => Promise<boolean>;
   /**
    * true — запит без правильного номера підтвердження замовлення відхиляється.
    * false — режим спостереження: розбіжність лише пишеться в лог.
@@ -54,6 +56,9 @@ const CORS_HEADERS = {
 const REVIEW_SQL =
   'SELECT MAX(review_outstanding) AS outstanding FROM invoices WHERE order_id = ? AND review_outstanding IS NOT NULL';
 
+// Має збігатися з ratelimits.simple.period у wrangler.toml
+const RATE_LIMIT_PERIOD_SECONDS = 60;
+
 export function createInvoicePreflightHandler() {
   return (c: Context) => c.body(null, 204, CORS_HEADERS);
 }
@@ -76,6 +81,14 @@ export function createInvoiceHandler(deps: CreateInvoiceDeps) {
     const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
     if (token.length === 0 || !(await deps.verifyToken(token))) {
       return c.json({ error: 'unauthorized' }, 401);
+    }
+
+    // Кожен запит далі коштує звернення до Shopify Admin API, а новий інвойс — ще й
+    // до mono. Ліміт стоїть після перевірки токена, щоб рахувалися лише запити
+    // від справжніх сесій чекауту.
+    if (!(await deps.allowRequest(c.req.header('CF-Connecting-IP') ?? 'unknown'))) {
+      c.header('Retry-After', String(RATE_LIMIT_PERIOD_SECONDS));
+      return c.json({ error: 'too many requests' }, 429);
     }
 
     const body = await c.req

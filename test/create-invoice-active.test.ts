@@ -62,6 +62,7 @@ function makeWorld(productTags: string[] = [], enforceOrderBinding = true) {
       mono,
       db,
       verifyToken: () => Promise.resolve(true),
+      allowRequest: () => Promise.resolve(true),
       enforceOrderBinding,
       webHookUrl: 'https://pay.example.com/mono-webhook',
       now,
