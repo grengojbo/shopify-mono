@@ -99,7 +99,18 @@ function makeDb(options: {
 
 function makeShopify(overrides: Partial<{ orderMarkAsPaid: ReturnType<typeof vi.fn> }> = {}) {
   return {
-    getOrderForInvoice: vi.fn(),
+    // Чинне неоплачене замовлення із залишком, рівним сумі інвойсу у фікстурі
+    getOrderForInvoice: vi.fn().mockResolvedValue({
+      id: 'gid://shopify/Order/77',
+      name: '#1077',
+      financialStatus: 'PENDING',
+      cancelledAt: null,
+      statusPageUrl: null,
+      totalOutstandingKopecks: 42000,
+      currencyCode: 'UAH',
+      paymentGatewayNames: ['monobank'],
+      lineItems: [],
+    }),
     orderMarkAsPaid: overrides.orderMarkAsPaid ?? vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -513,6 +524,9 @@ describe('POST /mono-webhook — звірка суми', () => {
     expect(text).toContain('1.00');
     const updateCall = f.calls.find((c) => c.sql.includes('UPDATE invoices'));
     expect(updateCall?.params.slice(0, 3)).toEqual(['success', FIXED_NOW, 100]);
+    const review = f.calls.find((c) => c.sql.includes('review_outstanding'));
+    expect(review?.params).toEqual([42000, 'p2_9ZgpZVsl3']);
+    expect(f.batch.mock.calls[0]?.[0]).toHaveLength(3); // log + update + review
   });
 
   it('суми у вебхуку немає взагалі → fail-closed: без mark-paid, сповіщення «невідомо»', async () => {
@@ -535,6 +549,49 @@ describe('POST /mono-webhook — звірка суми', () => {
     expect(res.status).toBe(200);
     expect(f.shopify.orderMarkAsPaid).toHaveBeenCalledTimes(1);
     expect(f.notifier.send).not.toHaveBeenCalled();
+  });
+
+  it('замовлення відредаговано після створення інвойсу → без mark-paid, сповіщення, залишок фіксується', async () => {
+    const f = await makeFixture();
+    f.shopify.getOrderForInvoice.mockResolvedValue({
+      financialStatus: 'PENDING',
+      cancelledAt: null,
+      totalOutstandingKopecks: 50000,
+    });
+
+    const res = await post(f.app, SUCCESS_BODY, await f.xSign(SUCCESS_BODY));
+
+    expect(res.status).toBe(200);
+    expect(f.shopify.orderMarkAsPaid).not.toHaveBeenCalled();
+    expect(f.notifier.send.mock.calls[0]?.[0]).toContain('залишок замовлення змінився');
+    const review = f.calls.find((c) => c.sql.includes('review_outstanding'));
+    expect(review?.params).toEqual([50000, 'p2_9ZgpZVsl3']);
+  });
+
+  it('замовлення скасовано, а оплата пройшла → без mark-paid, сповіщення оператору', async () => {
+    const f = await makeFixture();
+    f.shopify.getOrderForInvoice.mockResolvedValue({
+      financialStatus: 'PENDING',
+      cancelledAt: '2027-01-15T10:00:00Z',
+      totalOutstandingKopecks: 42000,
+    });
+
+    const res = await post(f.app, SUCCESS_BODY, await f.xSign(SUCCESS_BODY));
+
+    expect(res.status).toBe(200);
+    expect(f.shopify.orderMarkAsPaid).not.toHaveBeenCalled();
+    expect(f.notifier.send.mock.calls[0]?.[0]).toContain('замовлення скасовано');
+  });
+
+  it('Shopify недоступний під час звірки → 500 без запису в D1 (mono повторить)', async () => {
+    const f = await makeFixture();
+    f.shopify.getOrderForInvoice.mockRejectedValue(new Error('shopify down'));
+
+    const res = await post(f.app, SUCCESS_BODY, await f.xSign(SUCCESS_BODY));
+
+    expect(res.status).toBe(500);
+    expect(f.batch).not.toHaveBeenCalled();
+    expect(f.shopify.orderMarkAsPaid).not.toHaveBeenCalled();
   });
 
   it('сповіщення не відправилось → 500 без запису в D1: mono повторить, оператор таки дізнається', async () => {
