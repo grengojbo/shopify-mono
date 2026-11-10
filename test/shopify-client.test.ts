@@ -26,6 +26,7 @@ function orderNode(overrides: Record<string, unknown> = {}) {
     name: '#1001',
     displayFinancialStatus: 'PENDING',
     cancelledAt: null,
+    confirmationNumber: 'XPAV284CT',
     statusPageUrl: 'https://bbox-test.myshopify.com/orders/abc/status',
     paymentGatewayNames: ['monobank'],
     totalOutstandingSet: { shopMoney: { amount: '420.00', currencyCode: 'UAH' } },
@@ -99,6 +100,25 @@ describe('getOrderForInvoice', () => {
       query: string;
     };
     expect(body.query).toContain('cancelledAt');
+  });
+
+  it('прокидає confirmationNumber; null, якщо Shopify його не повернув', async () => {
+    const withNumber = vi.fn().mockResolvedValue(graphqlResponse({ order: orderNode() }));
+    const without = vi
+      .fn()
+      .mockResolvedValue(graphqlResponse({ order: orderNode({ confirmationNumber: null }) }));
+
+    expect(
+      (await makeClient(withNumber).getOrderForInvoice('gid://shopify/Order/1'))
+        ?.confirmationNumber,
+    ).toBe('XPAV284CT');
+    expect(
+      (await makeClient(without).getOrderForInvoice('gid://shopify/Order/1'))?.confirmationNumber,
+    ).toBe(null);
+    const body = JSON.parse(
+      (withNumber.mock.calls[0] as [string, RequestInit])[1].body as string,
+    ) as { query: string };
+    expect(body.query).toContain('confirmationNumber');
   });
 
   it('прокидає теги товару в кожну позицію', async () => {

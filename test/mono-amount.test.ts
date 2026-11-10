@@ -11,6 +11,7 @@ function makeOrder(overrides: Partial<OrderForInvoice> = {}): OrderForInvoice {
     name: '#1001',
     financialStatus: 'PENDING',
     cancelledAt: null,
+    confirmationNumber: 'XPAV284CT',
     statusPageUrl: null,
     totalOutstandingKopecks: 42000,
     currencyCode: 'UAH',

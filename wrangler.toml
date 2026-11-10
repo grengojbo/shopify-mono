@@ -7,6 +7,13 @@ main = "src/index.ts"
 compatibility_date = "2026-06-01"
 compatibility_flags = ["nodejs_compat"]
 
+[vars]
+# /create-invoice звіряє номер підтвердження замовлення з Thank You сторінки.
+# "false" — режим спостереження: розбіжність лише пишеться в лог Worker'а.
+# Перемкнути на "true" після перевірки на реальному замовленні, що в логах
+# немає попереджень «номер підтвердження не збігається».
+ENFORCE_ORDER_BINDING = "false"
+
 [[d1_databases]]
 binding = "bbox_payments"
 database_name = "bbox-payments"

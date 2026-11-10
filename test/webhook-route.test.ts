@@ -105,6 +105,7 @@ function makeShopify(overrides: Partial<{ orderMarkAsPaid: ReturnType<typeof vi.
       name: '#1077',
       financialStatus: 'PENDING',
       cancelledAt: null,
+      confirmationNumber: 'XPAV284CT',
       statusPageUrl: null,
       totalOutstandingKopecks: 42000,
       currencyCode: 'UAH',
@@ -556,6 +557,7 @@ describe('POST /mono-webhook — звірка суми', () => {
     f.shopify.getOrderForInvoice.mockResolvedValue({
       financialStatus: 'PENDING',
       cancelledAt: null,
+      confirmationNumber: 'XPAV284CT',
       totalOutstandingKopecks: 50000,
     });
 

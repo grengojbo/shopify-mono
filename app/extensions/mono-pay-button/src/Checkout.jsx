@@ -1,6 +1,6 @@
 // Кнопка «Сплатити через monobank» на Thank You сторінці (Path A, PRD §5, §10).
 //
-// Потік: orderId з Order API → POST {worker_url}/create-invoice із session
+// Потік: orderId і номер підтвердження з Order API → POST {worker_url}/create-invoice із session
 // token (Bearer) → рендер помітного банера з кнопкою-посиланням на pageUrl.
 // Авто-редірект технічно неможливий (PRD §2) — кнопка, яку тисне покупець.
 
@@ -38,7 +38,12 @@ function Extension() {
             Authorization: `Bearer ${token}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ orderId }),
+          // Номер підтвердження доводить Worker'у, що запит — зі сторінки саме
+          // цього замовлення (orderId сам по собі можна підставити будь-який)
+          body: JSON.stringify({
+            orderId,
+            confirmationNumber: shopify.orderConfirmation.value?.number,
+          }),
         });
 
         if (cancelled) return;
