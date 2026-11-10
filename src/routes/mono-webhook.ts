@@ -22,8 +22,31 @@ export type MonoWebhookDeps = {
   now: () => number;
 };
 
-/** Термінальні статуси не можна перезаписати нетермінальними (пізні/переупорядковані ретраї). */
 const TERMINAL_STATUSES = new Set(['success', 'failure', 'reversed', 'expired']);
+
+/**
+ * Чи є вебхук запізнілим щодо вже зафіксованого статусу. mono ретраїть
+ * недоставлені вебхуки, тож старий статус може прийти після новішого;
+ * такий вебхук лише журналюється — без mark-paid і без зміни інвойсу.
+ *
+ * - `reversed` остаточний: кошти повернуто, ретрай старого `success` не має
+ *   знову зробити замовлення оплаченим;
+ * - `success` змінюється лише на `reversed` (повторний `success` дозволено —
+ *   він дозаписує реквізити платежу після cron-backstop'у);
+ * - будь-який термінальний статус не знижується до нетермінального.
+ *
+ * `failure`/`expired` → `success` навмисно дозволено: підписаний `success`
+ * означає, що гроші справді списано, і замовлення має стати оплаченим.
+ */
+function isStaleTransition(current: string, incoming: string): boolean {
+  if (current === 'reversed') {
+    return true;
+  }
+  if (current === 'success') {
+    return incoming !== 'success' && incoming !== 'reversed';
+  }
+  return TERMINAL_STATUSES.has(current) && !TERMINAL_STATUSES.has(incoming);
+}
 
 type WebhookPayload = {
   invoiceId?: unknown;
@@ -102,10 +125,9 @@ export function monoWebhookHandler(deps: MonoWebhookDeps) {
       return c.json({ error: 'unknown invoice' }, 404);
     }
 
-    const isLateNonTerminal =
-      TERMINAL_STATUSES.has(invoice.status) && !TERMINAL_STATUSES.has(status);
+    const isStale = isStaleTransition(invoice.status, status);
 
-    if (status === 'success' && !isLateNonTerminal) {
+    if (status === 'success' && !isStale) {
       try {
         // order_id — з D1, не з тіла вебхука: авторитет — наша база
         await deps.shopify.orderMarkAsPaid(invoice.order_id);
@@ -123,7 +145,7 @@ export function monoWebhookHandler(deps: MonoWebhookDeps) {
         )
         .bind(invoiceId, status, bodyText, receivedAt),
     ];
-    if (!isLateNonTerminal) {
+    if (!isStale) {
       // Для hold-інвойсу success означає capture — фіксуємо момент фіналізації
       const isCapture = invoice.payment_type === 'hold' && status === 'success';
       const updateSql = isCapture
